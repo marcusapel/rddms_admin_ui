@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}RDDMS Admin — {{ ds }}{% endblock %}
+
+{% block content %}
+  <h1>{{ ds }}</h1>
+
+  <h2>Types</h2>
+  {% if types and types|length > 0 %}
+    <table>
+      <thead>
+        <tr><th>Type</th><th>Count</th><th>Browse</th></tr>
+      </thead>
+      <tbody>
+        {% for t in types %}
+          {% set name = t.get('name') if t is mapping else t %}
+          {% set count = t.get('count') if t is mapping else '' %}
+          <tr>
+            <td><code>{{ name }}</code></td>
+            <td>{{ count }}</td>
+            <td>/d/{{ ds }}/t/{{ name }}Open</button></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="muted">No types found in this dataspace.</p>
+  {% endif %}
+
+  <h2>Objects</h2>
+  <p class="muted">Select a type above to list its objects.</p>
+  <div id="type-rows"></div>
+
+  <!-- (Create Resource sections you already have can stay as-is; they’re not anchors/forms here) -->
+
+  <script>
+    // Load type resources via fetch when clicking the button
+    document.addEventListener('click', async function (e) {
+      const btn = e.target.closest('.type-btn');
+      if (!btn) return;
+      e.preventDefault();
+      const container = document.getElementById('type-rows');
+      container.innerHTML = '<p class="muted">Loading…</p>';
+      try {
+        const res = await fetch(btn.getAttribute('data-href'), { headers: { 'X-Requested-With': 'fetch' } });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        container.innerHTML = await res.text();
+        container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } catch (err) {
+        console.error(err);
+        container.innerHTML = '<p class="muted">Failed to load resources for this type.</p>';
+      }
+    });
+
+    // Delegate "Open" buttons from fragment (see _fragments.html)
+    document.getElementById('type-rows')?.addEventListener('click', function (e) {
+      const b = e.target.closest('.open-resource-btn');
+      if (b) {
+        e.preventDefault();
+        const url = b.getAttribute('data-href');
+        if (url) window.location.href = url;
+      }
+    });
+  </script>
+{% endblock %}

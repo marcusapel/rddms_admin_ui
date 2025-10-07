@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}RDDMS Admin — Search{% endblock %}
+
+{% block content %}
+  <h1>Search</h1>
+
+  <div id="search-form">
+    <div class="row">
+      <label for="kind">kind</label>
+      <input id="kind" type="text" value="{{ kind or '*:*:*:*' }}" placeholder="e.g., osdu:*:*:*">
+    </div>
+    <div class="row">
+      <label for="query">query</label>
+      <input id="query" type="text" value="{{ q or '*' }}" placeholder="lucene query (e.g., data.legaltags:*)">
+    </div>
+    <div class="row">
+      <label for="limit">limit</label>
+      <input id="limit" type="number" min="1" max="500" value="20">
+    </div>
+    <div class="row">
+      <label></label>
+      <button class="btn" id="search-run" type="button">Search</button>
+    </div>
+    <p id="search-msg" class="muted" style="display:none;"></p>
+  </div>
+
+  <div id="search-results">
+    {% if results %}
+      <h2>Results</h2>
+      <pre>{{ results | tojson(indent=2) }}</pre>
+    {% endif %}
+  </div>
+
+  <script>
+    document.getElementById('search-run')?.addEventListener('click', async function () {
+      const kind = document.getElementById('kind').value.trim();
+      const query = document.getElementById('query').value.trim();
+      const limit = document.getElementById('limit').value.trim();
+      const msg = document.getElementById('search-msg');
+      const out = document.getElementById('search-results');
+
+      msg.style.display = 'none';
+      out.innerHTML = '';
+
+      const fd = new FormData();
+      fd.append('kind', kind || '*:*:*:*');
+      fd.append('query', query || '*');
+      fd.append('limit', limit || '20');
+
+      try {
+        const res = await fetch('/search/run', { method: 'POST', body: fd });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const html = await res.text();
+        out.innerHTML = html;
+      } catch (e) {
+        msg.style.display = 'block';
+        msg.textContent = 'Search failed: ' + (e?.message || e);
+        console.error(e);
+      }
+    });
+  </script>
+{% endblock %}

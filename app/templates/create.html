@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block content %}
+<h1 class="text-xl font-semibold mb-4">Create — {{ ds }}</h1>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+  <section class="bg-white border rounded p-4">
+    <h2 class="font-medium mb-2">PropertyKind</h2>
+    <form hx-post="/d/{{ ds }}/new/property-kind" hx-target="#pk-result" class="space-y-2">
+      <input name="title" class="w-full border rounded p-2" placeholder="Title" required/>
+      <input name="naming_system" class="w-full border rounded p-2" value="http://example.com"/>
+      <select name="quantity_class" class="w-full border rounded p-2">
+        <option>discrete</option><option>continuous</option>
+      </select>
+      <button class="px-3 py-2 bg-slate-900 text-white rounded">Create</button>
+    </form>
+    <pre id="pk-result" class="text-xs mt-2"></pre>
+  </section>
+
+  <section class="bg-white border rounded p-4">
+    <h2 class="font-medium mb-2">StringTableLookup</h2>
+    <form hx-post="/d/{{ ds }}/new/string-lookup" hx-target="#sl-result" class="space-y-2">
+      <input name="title" class="w-full border rounded p-2" placeholder="Title" required/>
+      <input name="entries" class="w-full border rounded p-2" value="A,B,C"/>
+      <button class="px-3 py-2 bg-slate-900 text-white rounded">Create</button>
+    </form>
+    <pre id="sl-result" class="text-xs mt-2"></pre>
+  </section>
+
+  <section class="bg-white border rounded p-4">
+    <h2 class="font-medium mb-2">LocalDepth3dCrs</h2>
+    <form hx-post="/d/{{ ds }}/new/local-crs" hx-target="#crs-result" class="space-y-2">
+      <input name="title" class="w-full border rounded p-2" value="Local Depth CRS"/>
+      <button class="px-3 py-2 bg-slate-900 text-white rounded">Create</button>
+    </form>
+    <pre id="crs-result" class="text-xs mt-2"></pre>
+  </section>
+
+  <section class="bg-white border rounded p-4">
+    <h2 class="font-medium mb-2">Grid2dRepresentation (lattice)</h2>
+    <form hx-post="/d/{{ ds }}/new/grid2d" hx-target="#g2d-result" class="grid grid-cols-2 gap-2">
+      <input name="title" class="col-span-2 border rounded p-2" value="Horizon"/>
+      <input name="crs_uuid" class="col-span-2 border rounded p-2" placeholder="LocalDepth3dCrs UUID" required/>
+      <input name="n_fast" class="border rounded p-2" value="350" />
+      <input name="n_slow" class="border rounded p-2" value="550" />
+      <input name="origin_x" class="border rounded p-2" placeholder="Origin X" required/>
+      <input name="origin_y" class="border rounded p-2" placeholder="Origin Y" required/>
+      <input name="u_x" class="border rounded p-2" placeholder="U vec X" required/>
+      <input name="u_y" class="border rounded p-2" placeholder="U vec Y" required/>
+      <input name="v_x" class="border rounded p-2" placeholder="V vec X" required/>
+      <input name="v_y" class="border rounded p-2" placeholder="V vec Y" required/>
+      <input name="u_spacing" class="border rounded p-2" value="1.0"/>
+      <input name="v_spacing" class="border rounded p-2" value="1.0"/>
+      <button class="col-span-2 px-3 py-2 bg-slate-900 text-white rounded">Create</button>
+    </form>
+    <pre id="g2d-result" class="text-xs mt-2 col-span-2"></pre>
+  </section>
+</div>

@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}{{ typ }} — {{ uuid }}{% endblock %}
+
+{% block content %}
+  <h1>{{ typ }}</h1>
+  <p class="muted">UUID: <code>{{ uuid }}</code> — Dataspace: <code>{{ ds }}</code></p>
+
+  <div style="margin-bottom:8px;">
+    /d/{{ ds }}Back to {{ ds }}</button>
+  </div>
+
+  <h2>Metadata</h2>
+  <pre>{{ obj | tojson(indent=2) }}</pre>
+
+  {% if geom %}
+    <h2>Grid2d Geometry (derived)</h2>
+    <pre>{{ geom | tojson(indent=2) }}</pre>
+  {% endif %}
+
+  <h2>References</h2>
+  {% if edges and (edges.targets or edges.sources) %}
+    <h3>Targets</h3>
+    {% if edges.targets %}
+      <ul>
+        {% for e in edges.targets %}
+          <li><code>{{ e.contentType }}</code> — <code>{{ e.uuid }}</code> — {{ e.title }}</li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="muted">No target references.</p>
+    {% endif %}
+  {% else %}
+    <p class="muted">No references detected.</p>
+  {% endif %}
+
+  <h2>Arrays</h2>
+  {% if arrays and arrays|length > 0 %}
+    <ul>
+      {% for a in arrays %}
+        {% set p = a.get('path') or a.get('pathInResource') or a %}
+        <li>
+          <code>{{ p }}</code>
+          — /d/{{ ds }}/t/{{ typ }}/{{ uuid }}/arrays/read?path={{ p | urlencode }}Read & stats</button>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="muted">No arrays listed.</p>
+  {% endif %}
+{% endblock %}
