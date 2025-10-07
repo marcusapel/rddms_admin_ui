@@ -19,44 +19,126 @@
   {% endif %}
 
   <hr />
+  <h2>Create a dataspace</h2>
+  <div id="create-ds">
+    <div class="row">
+      <label for="path">Path</label>
+      <input id="path" name="path" type="text"
+             value="{{ ds_default or '' }}"
+             placeholder="e.g., maap/drogon" required>
+    </div>
+    <div class="row">
+      <label for="legal">Legal tag</label>
+      <input id="legal" name="legal" type="text"
+             value="{{ default_legal_tag or '' }}" required>
+    </div>
+    <div class="row">
+      <label for="owners">Owners (comma‑sep)</label>
+      <input id="owners" name="owners" type="text"
+             value="{{ default_owners or '' }}" required>
+    </div>
+    <div class="row">
+      <label for="viewers">Viewers (comma‑sep)</label>
+      <input id="viewers" name="viewers" type="text"
+             value="{{ default_viewers or '' }}" required>
+    </div>
+    <div class="row">
+      <label for="countries">Countries (comma‑sep)</label>
+      <input id="countries" name="countries" type="text"
+             value="{{ default_countries or '' }}" required>
+    </div>
+    <div class="row">
+      <label></label>
+      <span class="btn" id="create-ds-btn">Create</span>
+    </div>
+    <p id="create-msg" class="muted" style="display:none;"></p>
+  </div>
 
   <script>
     // Build per-row actions after DOM is parsed.
-    // We do NOT render <a> or <button> server-side to survive any HTML sanitizer.
     document.addEventListener('DOMContentLoaded', function () {
+      // --- Per-dataspace actions: [Open] and [Keys]
       const rows = document.querySelectorAll('#ds-list li[data-path]');
       rows.forEach(li => {
         const path = li.getAttribute('data-path') || '';
 
-        // Remove any stray text nodes a sanitizer might have left
+        // Remove stray text left by sanitizer (defensive)
         li.childNodes.forEach(n => { if (n.nodeType === Node.TEXT_NODE) n.textContent = ''; });
 
-        // Create [Open] button
-        const openBtn = document.createElement('span');
-        openBtn.className = 'btn';
-        openBtn.textContent = 'Open';
-        openBtn.title = `Open ${path}`;
-        openBtn.style.marginRight = '8px';
-        openBtn.addEventListener('click', () => {
+        const mkBtn = (label, title, onClick) => {
+          const s = document.createElement('span');
+          s.className = 'btn';
+          s.textContent = label;
+          s.title = title;
+          s.style.marginRight = '8px';
+          s.addEventListener('click', onClick);
+          return s;
+        };
+
+        const codeNode = li.querySelector('code');
+        const openBtn = mkBtn('Open', `Open ${path}`, () => {
           window.location.assign('/d/' + encodeURIComponent(path));
         });
-
-        // Create [Keys] button, preselecting the dataspace via ?ds=...
-        const keysBtn = document.createElement('span');
-        keysBtn.className = 'btn';
-        keysBtn.textContent = 'Keys';
-        keysBtn.title = `Open Keys for ${path}`;
-        keysBtn.style.marginRight = '8px';
-        keysBtn.addEventListener('click', () => {
+        const keysBtn = mkBtn('Keys', `Open Keys for ${path}`, () => {
           window.location.assign('/keys?ds=' + encodeURIComponent(path));
         });
 
-        // Insert actions before the <code>path</code>
-        const codeNode = li.querySelector('code');
         li.insertBefore(keysBtn, codeNode);
         li.insertBefore(openBtn, codeNode);
         li.insertBefore(document.createTextNode(' '), codeNode);
       });
+
+      // --- Create dataspace without <form>, with redirect handling.
+      const btn = document.getElementById('create-ds-btn');
+      const msg = document.getElementById('create-msg');
+      if (btn) {
+        btn.addEventListener('click', async function () {
+          const path = document.getElementById('path').value.trim();
+          const legal = document.getElementById('legal').value.trim();
+          const owners = document.getElementById('owners').value.trim();
+          const viewers = document.getElementById('viewers').value.trim();
+          const countries = document.getElementById('countries').value.trim();
+
+          msg.style.display = 'none';
+          if (!path || !legal || !owners || !viewers || !countries) {
+            msg.style.display = 'block';
+            msg.textContent = 'All fields are required.';
+            return;
+          }
+
+          const fd = new FormData();
+          fd.append('path', path);
+          fd.append('legal', legal);
+          fd.append('owners', owners);
+          fd.append('viewers', viewers);
+          fd.append('countries', countries);
+
+          try {
+            const res = await fetch('/dataspaces/create', {
+              method: 'POST', body: fd, credentials: 'same-origin', redirect: 'manual'
+            });
+
+            // Some environments hide redirects from fetch; navigate manually.
+            if (res.type === 'opaqueredirect' || (res.status >= 300 && res.status < 400) || res.status === 0) {
+              window.location.assign('/d/' + encodeURIComponent(path));
+              return;
+            }
+            if (res.redirected) {
+              window.location.assign(res.url);
+              return;
+            }
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+
+            msg.style.display = 'block';
+            msg.textContent = 'Created. Opening…';
+            setTimeout(() => window.location.assign('/d/' + encodeURIComponent(path)), 500);
+          } catch (e) {
+            msg.style.display = 'block';
+            msg.textContent = 'Create failed: ' + (e?.message || e);
+            console.error(e);
+          }
+        });
+      }
     });
   </script>
 {% endblock %}

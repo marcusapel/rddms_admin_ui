@@ -1,25 +1,24 @@
-##
- RDDMS web client server
-
-
-### Install and run
+# INstall and run
 pip install uvicorn fastapi httpx jinja2 numpy multipart
 py -m uvicorn app.main:app --reload --port 8000 --env-file .\.env
 
-open http://localhost:8000
+# open http://localhost:8000
 
 rddms-admin/
 ├─ requirements.txt
-├─ .env.example
+├─ .env
 └─ app/
    ├─ main.py
+   ├─ auth.py
    ├─ osdu.py
    ├─ templates/
    │  ├─ base.html
    │  ├─ index.html
    │  ├─ dataspace.html
    │  ├─ resource.html
-   │  └─ _fragments.html
+   │  ├─ create.html
+   │  ├─ _fragments.html
+   |  └─ search.html
    └─ static/
       └─ app.js
 
