@@ -60,7 +60,7 @@ sequenceDiagram
 
 ### Manifest Ingestion Sequence Diagram
 
-```
+```mermaid
 sequenceDiagram
   participant U as User
   participant UI as Admin UI (FastAPI + JS)
