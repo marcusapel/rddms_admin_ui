@@ -71,7 +71,7 @@
       // --- Add nav entries here ---
       root.appendChild(linkSpan('/', 'Home'));
       root.appendChild(linkSpan('/search', 'Search'));
-      root.appendChild(linkSpan('/keys', 'Keys'));   // <<< NEW
+      root.appendChild(linkSpan('/keys', 'Resources'));   // <<< NEW
       root.appendChild(el('span', { 'class': 'muted' }, ' | '));
 
       var encNext = encodeURIComponent(current);
@@ -94,8 +94,5 @@
     });
   })();
 </script>
-
-  <!-- FALLBACK: External JS (if allowed) -->
-  /static/app.js</script>
 </body>
 </html>

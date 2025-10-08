@@ -1,247 +1,348 @@
 from __future__ import annotations
+
 import os
+import json
 import logging
 from typing import Any, Dict, List, Optional
-
+import urllib.parse  
 import httpx
 
-log = logging.getLogger("rddms-admin")
-INFO = log.info
-ERROR = log.error
+log = logging.getLogger("rddms-admin.osdu")
 
-# --- Configuration
-OSDU_BASE_URL = os.getenv("OSDU_BASE_URL", "equinordev.energy.azure.com")
-DATA_PARTITION_ID = os.getenv("DATA_PARTITION_ID", "data")
-AZURE_TENANT_ID = os.getenv("AZURE_TENANT_ID", "")
-AZURE_CLIENT_ID = os.getenv("AZURE_CLIENT_ID", "")
-AZURE_SCOPE = os.getenv("AZURE_SCOPE", "openid offline_access")
+# ----------------------------------------------------------------------
+# Environment & defaults
+# ----------------------------------------------------------------------
 
-OSDU_BASE = f"https://{OSDU_BASE_URL}"
-RDDMS_REST = f"{OSDU_BASE}/api/reservoir-ddms/v2"
-LEGAL_API = f"{OSDU_BASE}/api/legal/v1"
-ENT_API = f"{OSDU_BASE}/api/entitlements/v2"
+# Base DNS name of your ADME/OSDU instance (no scheme).
+OSDU_BASE_URL: str = os.getenv("OSDU_BASE_URL", "equinordev.energy.azure.com")
 
-DEFAULT_LEGAL_TAG = os.getenv(
-    "DEFAULT_LEGAL_TAG", f"{DATA_PARTITION_ID}-equinor-private-default"
-)
-DEFAULT_COUNTRIES = [
-    c.strip()
-    for c in os.getenv("DEFAULT_OTHER_RELEVANT_DATA_COUNTRIES", "NO").split(",")
-    if c.strip()
-]
-DEFAULT_OWNERS = [os.getenv("DEFAULT_OWNERS", f"data.default.owners@{DATA_PARTITION_ID}.dataservices.energy")]
-DEFAULT_VIEWERS = [os.getenv("DEFAULT_VIEWERS", f"data.default.viewers@{DATA_PARTITION_ID}.dataservices.energy")]
+# Required header for all ADME/OSDU calls.
+DATA_PARTITION_ID: str = os.getenv("DATA_PARTITION_ID", "").strip()
 
-# --- Headers
+def _partition_suffix() -> str:
+    # e.g., "dp1.dataservices.energy"
+    return f"{DATA_PARTITION_ID}.dataservices.energy" if DATA_PARTITION_ID else "partition.dataservices.energy"
+
+# Sensible defaults for the "Create Dataspace" form (can be overridden in env)
+DEFAULT_LEGAL_TAG: str = os.getenv("DEFAULT_LEGAL_TAG", f"{DATA_PARTITION_ID}-RDDMS-Legal-Tag" if DATA_PARTITION_ID else "dp1-RDDMS-Legal-Tag")
+
+_default_owners = os.getenv("DEFAULT_OWNERS", f"data.default.owners@{_partition_suffix()}")
+DEFAULT_OWNERS: List[str] = [x.strip() for x in _default_owners.split(",") if x.strip()]
+
+_default_viewers = os.getenv("DEFAULT_VIEWERS", f"data.default.viewers@{_partition_suffix()}")
+DEFAULT_VIEWERS: List[str] = [x.strip() for x in _default_viewers.split(",") if x.strip()]
+
+_default_countries = os.getenv("DEFAULT_COUNTRIES", "US")
+DEFAULT_COUNTRIES: List[str] = [x.strip() for x in _default_countries.split(",") if x.strip()]
+
+# ----------------------------------------------------------------------
+# HTTP utils
+# ----------------------------------------------------------------------
+
 def headers(access_token: str) -> Dict[str, str]:
+    if not DATA_PARTITION_ID:
+        log.warning("DATA_PARTITION_ID env var is not set; calls may fail")
     return {
         "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
         "data-partition-id": DATA_PARTITION_ID,
-        "content-type": "application/json",
-        "accept": "application/json",
     }
 
-# --- Generic API request
-async def api_request(
-    method: str,
-    url: str,
-    access_token: str,
-    *,
-    params=None,
-    json_body=None,
-    data=None,
-    timeout=120,
-) -> httpx.Response:
-    hdr = headers(access_token)
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.request(
-            method, url, headers=hdr, params=params, json=json_body, data=data
-        )
-    if resp.status_code >= 400:
-        ERROR("API %s %s failed: %s %s", method, url, resp.status_code, resp.text[:400])
-    return resp
+# ----------------------------------------------------------------------
+# Dataspaces
+# ----------------------------------------------------------------------
 
-# --- LegalTag
-async def ensure_legal_tag(
-    access_token: str,
-    name: str = DEFAULT_LEGAL_TAG,
-    countries: List[str] = DEFAULT_COUNTRIES,
-) -> None:
-    url = f"{LEGAL_API}/legaltags/{name}"
-    r = await api_request("GET", url, access_token)
-    if r.status_code == 200:
-        return
-
-    payload = {
-        "name": name,
-        "properties": {
-            "countryOfOrigin": countries,
-            "contractId": "na",
-            "dataType": "RESERVOIR",
-            "originator": "admin-ui",
-            "securityClassification": "PRIVATE",
-            "personalData": "NO",
-            "exportClassification": "EAR99",
-        },
-    }
-    r2 = await api_request("POST", f"{LEGAL_API}/legaltags", access_token, json_body=payload)
-    r2.raise_for_status()
-
-# --- Dataspaces
 async def list_dataspaces(access_token: str) -> List[Dict[str, Any]]:
-    r = await api_request("GET", f"{RDDMS_REST}/dataspaces", access_token)
-    r.raise_for_status()
-    js = r.json() or []
-    return js
+    """GET /api/reservoir-ddms/v2/dataspaces"""
+    url = f"https://{OSDU_BASE_URL}/api/reservoir-ddms/v2/dataspaces"
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.get(url, headers=headers(access_token))
+        r.raise_for_status()
+        return r.json() or []
 
 async def create_dataspace(
     access_token: str,
     path: str,
     *,
-    legal_tag: str = DEFAULT_LEGAL_TAG,
-    owners: List[str] = DEFAULT_OWNERS,
-    viewers: List[str] = DEFAULT_VIEWERS,
-    countries: List[str] = DEFAULT_COUNTRIES,
-) -> Dict[str, Any]:
-    await ensure_legal_tag(access_token, legal_tag, countries)
-    payload = {
-        "path": path,
-        "customData": {
-            "legaltags": [legal_tag],
-            "owners": owners,
-            "viewers": viewers,
-            "otherRelevantDataCountries": countries,
-            "locked": "false",
-            "read-only": "false",
-        },
+    legal_tag: str,
+    owners: List[str],
+    viewers: List[str],
+    countries: List[str],
+    extra_custom: Optional[Dict[str, Any]] = None,
+) -> Any:
+    """POST /api/reservoir-ddms/v2/dataspaces"""
+    url = f"https://{OSDU_BASE_URL}/api/reservoir-ddms/v2/dataspaces"
+
+    custom: Dict[str, Any] = {
+        "legaltags": [legal_tag],
+        "otherRelevantDataCountries": countries,
+        "viewers": viewers,
+        "owners": owners,
     }
-    r = await api_request("POST", f"{RDDMS_REST}/dataspaces", access_token, json_body=payload)
-    r.raise_for_status()
+    if extra_custom:
+        # Do not let extra keys override reserved compliance ACL fields
+        for k in ("legaltags", "otherRelevantDataCountries", "viewers", "owners"):
+            extra_custom.pop(k, None)
+        custom.update(extra_custom)
+
+    payload = [
+        {
+            "DataspaceId": path,
+            "Path": path,
+            "CustomData": custom,
+        }
+    ]
+
+    hdr = headers(access_token)
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(url, headers=hdr, json=payload)
+
+    try:
+        r.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        corr = r.headers.get("x-correlation-id") or r.headers.get("x-request-id")
+        log.error(
+            "Dataspace create failed (%s) corr=%s\nURL=%s\nHeaders=%s\nPayload=%s\nResponseHeaders=%s\nBody=%s",
+            r.status_code, corr, url, hdr, json.dumps(payload, indent=2),
+            dict(r.headers), r.text
+        )
+        raise
     return r.json()
 
-async def delete_dataspace(access_token: str, path: str) -> None:
-    r = await api_request("DELETE", f"{RDDMS_REST}/dataspaces/{path}", access_token)
-    if r.status_code not in (200, 204, 404):
+# ----------------------------------------------------------------------
+# Types & resources
+# ----------------------------------------------------------------------
+
+async def list_types(access_token: str, ds_enc: str) -> List[Dict[str, Any]]:
+    """GET /dataspaces/{dataspaceId}/resources -> list of {'name','count'}"""
+    url = f"https://{OSDU_BASE_URL}/api/reservoir-ddms/v2/dataspaces/{ds_enc}/resources"
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.get(url, headers=headers(access_token))
         r.raise_for_status()
+        return r.json() or []
 
-# --- Resources
-async def list_types(access_token: str, dataspace_enc: str) -> List[Dict[str, Any]]:
-    r = await api_request("GET", f"{RDDMS_REST}/dataspaces/{dataspace_enc}/resources", access_token)
-    r.raise_for_status()
-    return r.json() or []
-
-async def list_resources(access_token: str, dataspace_enc: str, resqml_type: str) -> List[Dict[str, Any]]:
-    r = await api_request("GET", f"{RDDMS_REST}/dataspaces/{dataspace_enc}/resources/{resqml_type}", access_token)
-    r.raise_for_status()
-    return r.json() or []
+async def list_resources(access_token: str, ds_enc: str, typ: str) -> List[Dict[str, Any]]:
+    """GET /dataspaces/{dataspaceId}/resources/{dataObjectType}"""
+    url = f"https://{OSDU_BASE_URL}/api/reservoir-ddms/v2/dataspaces/{ds_enc}/resources/{typ}"
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.get(url, headers=headers(access_token))
+        r.raise_for_status()
+        return r.json() or []
 
 async def get_resource(
     access_token: str,
-    dataspace_enc: str,
-    resqml_type: str,
+    ds_enc: str,
+    typ: str,
     uuid: str,
     *,
-    include_refs: bool = True,
+    include_refs: bool = False,  # reserved for future expansion
 ) -> Dict[str, Any]:
-    params = {
-        "$format": "json",
-        "arrayMetadata": "false",
-        "arrayValues": "false",
-        "referencedContent": "true" if include_refs else "false",
-    }
-    r = await api_request(
-        "GET",
-        f"{RDDMS_REST}/dataspaces/{dataspace_enc}/resources/{resqml_type}/{uuid}",
-        access_token,
-        params=params,
-    )
-    r.raise_for_status()
-    js = r.json()
-    return js[0] if isinstance(js, list) and js else js
-
-async def delete_resource(access_token: str, dataspace_enc: str, resqml_type: str, uuid: str) -> None:
-    r = await api_request("DELETE", f"{RDDMS_REST}/dataspaces/{dataspace_enc}/resources/{resqml_type}/{uuid}", access_token)
-    if r.status_code not in (200, 204, 404):
+    """GET /dataspaces/{dataspaceId}/resources/{dataObjectType}/{guid}"""
+    url = f"https://{OSDU_BASE_URL}/api/reservoir-ddms/v2/dataspaces/{ds_enc}/resources/{typ}/{uuid}"
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.get(url, headers=headers(access_token))
         r.raise_for_status()
+        return r.json() or {}
 
-async def create_resource(access_token: str, dataspace_enc: str, resqml_type: str, body: Dict[str, Any]) -> Dict[str, Any]:
-    r = await api_request(
-        "POST",
-        f"{RDDMS_REST}/dataspaces/{dataspace_enc}/resources/{resqml_type}",
-        access_token,
-        json_body=body,
-    )
-    r.raise_for_status()
-    return r.json() if r.content else {}
+async def list_arrays(access_token: str, ds_enc: str, typ: str, uuid: str) -> List[Dict[str, Any]]:
+    """GET arrays metadata list for an object."""
+    url = f"https://{OSDU_BASE_URL}/api/reservoir-ddms/v2/dataspaces/{ds_enc}/resources/{typ}/{uuid}/arrays"
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.get(url, headers=headers(access_token))
+        r.raise_for_status()
+        return r.json() or []
 
-# --- Arrays
-async def list_arrays(access_token: str, dataspace_enc: str, resqml_type: str, uuid: str) -> List[dict]:
-    params = {"$format": "json", "arrayMetadata": "false", "arrayValues": "false", "referencedContent": "true"}
-    r = await api_request(
-        "GET",
-        f"{RDDMS_REST}/dataspaces/{dataspace_enc}/resources/{resqml_type}/{uuid}/arrays",
-        access_token,
-        params=params,
-    )
-    r.raise_for_status()
-    return r.json() or []
+async def read_array(
+    access_token: str,
+    ds_enc: str,
+    typ: str,
+    uuid: str,
+    *,
+    path_in_resource: str,
+) -> Dict[str, Any]:
+    """GET content of an array."""
+    url = f"https://{OSDU_BASE_URL}/api/reservoir-ddms/v2/dataspaces/{ds_enc}/resources/{typ}/{uuid}/arrays/{path_in_resource}"
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.get(url, headers=headers(access_token))
+        r.raise_for_status()
+        return r.json() or {}
 
-async def read_array(access_token: str, dataspace_enc: str, resqml_type: str, uuid: str, path_in_resource: str) -> dict:
-    from urllib.parse import quote
-    p = quote(path_in_resource, safe="")
-    r = await api_request(
-        "GET",
-        f"{RDDMS_REST}/dataspaces/{dataspace_enc}/resources/{resqml_type}/{uuid}/arrays/{p}",
-        access_token,
-        params={"format": "json"},
-    )
-    r.raise_for_status()
-    return r.json()
+# ----------------------------------------------------------------------
+# Helpers for UI features
+# ----------------------------------------------------------------------
 
-# --- Extract references
-def extract_refs(obj: Dict[str, Any]) -> Dict[str, List[Dict[str, str]]]:
-    edges = {"sources": [], "targets": []}
+def extract_refs(obj: Dict[str, Any]) -> List[Dict[str, str]]:
+    """Very lightweight scan for DataObjectReference-like dicts."""
+    edges: List[Dict[str, str]] = []
 
-    def _collect(d: Any):
-        if isinstance(d, dict):
-            ct = d.get("ContentType") or d.get("contentType")
-            uuid = d.get("UUID") or d.get("Uuid") or d.get("uuid")
-            title = d.get("Title") or d.get("title")
-            if ct and uuid:
-                edges["targets"].append({"contentType": ct, "uuid": uuid, "title": title or ""})
-            for v in d.values():
-                _collect(v)
-        elif isinstance(d, list):
-            for v in d:
-                _collect(v)
+    def _walk(x: Any):
+        if isinstance(x, dict):
+            ct = x.get("ContentType")
+            uid = x.get("UUID") or x.get("Uuid")
+            if ct and uid:
+                edges.append({"contentType": ct, "uuid": str(uid)})
+            for v in x.values():
+                _walk(v)
+        elif isinstance(x, list):
+            for v in x:
+                _walk(v)
 
-    _collect(obj)
+    _walk(obj)
     return edges
 
-# --- Geometry helper for Grid2d
-def extract_grid2d_geometry(obj: dict) -> dict | None:
+def extract_grid2d_geometry(obj: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Extract minimal visualization metadata from a Grid2dRepresentation."""
+    if not (obj.get("$type", "") or "").endswith("Grid2dRepresentation"):
+        return None
     try:
-        gp = obj.get("Grid2dPatch") or {}
-        geom = gp.get("Geometry") or {}
-        points = geom.get("Points") or {}
-        lat = None
-        if points.get("$type") == "resqml20.Point3dLatticeArray":
-            lat = points
-        elif points.get("$type") == "resqml20.Point3dZValueArray":
-            sg = points.get("SupportingGeometry") or {}
-            if isinstance(sg, dict) and sg.get("$type") == "resqml20.Point3dLatticeArray":
-                lat = sg
-        if not lat:
-            return None
-        origin = [lat["Origin"]["Coordinate1"], lat["Origin"]["Coordinate2"]]
-        offs = lat.get("Offset", [])
-        v1 = [offs[0]["Offset"]["Coordinate1"], offs[0]["Offset"]["Coordinate2"]]
-        v2 = [offs[1]["Offset"]["Coordinate1"], offs[1]["Offset"]["Coordinate2"]]
-        s1 = (offs[0].get("Spacing") or {}).get("Value", 1.0)
-        s2 = (offs[1].get("Spacing") or {}).get("Value", 1.0)
-        u = [v1[0] * s1, v1[1] * s1]
-        v = [v2[0] * s2, v2[1] * s2]
-        size = [gp.get("FastestAxisCount"), gp.get("SlowestAxisCount")]
-        return {"origin": origin, "u": u, "v": v, "size": size}
+        patch = obj["Grid2dPatch"]
+        fast = int(patch["FastestAxisCount"])
+        slow = int(patch["SlowestAxisCount"])
+        geom = patch["Geometry"]
+        pts = geom["Points"]
+        origin = pts["Origin"]
+        offsets = pts["Offset"]
+        u = offsets[0]
+        v = offsets[1]
+        return {
+            "fast": fast,
+            "slow": slow,
+            "origin": {
+                "x": origin.get("Coordinate1", 0.0),
+                "y": origin.get("Coordinate2", 0.0),
+                "z": origin.get("Coordinate3", 0.0),
+            },
+            "u": {
+                "dx": (u.get("Offset") or {}).get("Coordinate1", 0.0),
+                "dy": (u.get("Offset") or {}).get("Coordinate2", 0.0),
+                "spacing": ((u.get("Spacing") or {}).get("Value", 1.0)),
+            },
+            "v": {
+                "dx": (v.get("Offset") or {}).get("Coordinate1", 0.0),
+                "dy": (v.get("Offset") or {}).get("Coordinate2", 0.0),
+                "spacing": ((v.get("Spacing") or {}).get("Value", 1.0)),
+            },
+        }
     except Exception:
         return None
+
+async def delete_dataspace(access_token: str, path: str) -> None:
+    """
+    DELETE /api/reservoir-ddms/v2/dataspaces/{dataspaceId}
+    """
+    enc = urllib.parse.quote(path, safe="")
+    url = f"https://{OSDU_BASE_URL}/api/reservoir-ddms/v2/dataspaces/{enc}"
+    hdr = headers(access_token)
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.delete(url, headers=hdr)
+    try:
+        r.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        corr = r.headers.get("x-correlation-id") or r.headers.get("x-request-id")
+        log.error("Dataspace delete failed (%s) corr=%s path=%s body=%s",
+                  r.status_code, corr, path, r.text)
+        raise
+
+# --- add these helpers to app/osdu.py ---
+
+async def lock_dataspace(access_token: str, path: str) -> None:
+    """
+    POST /api/reservoir-ddms/v2/dataspaces/{dataspaceId}/lock
+    """
+    enc = urllib.parse.quote(path, safe="")
+    url = f"https://{OSDU_BASE_URL}/api/reservoir-ddms/v2/dataspaces/{enc}/lock"
+    hdr = headers(access_token)
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(url, headers=hdr)
+    try:
+        r.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        corr = r.headers.get("x-correlation-id") or r.headers.get("x-request-id")
+        log.error("Dataspace lock failed (%s) corr=%s path=%s body=%s",
+                  r.status_code, corr, path, r.text)
+        raise
+
+async def unlock_dataspace(access_token: str, path: str) -> None:
+    """
+    DELETE /api/reservoir-ddms/v2/dataspaces/{dataspaceId}/lock
+    """
+    enc = urllib.parse.quote(path, safe="")
+    url = f"https://{OSDU_BASE_URL}/api/reservoir-ddms/v2/dataspaces/{enc}/lock"
+    hdr = headers(access_token)
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.delete(url, headers=hdr)
+    try:
+        r.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        corr = r.headers.get("x-correlation-id") or r.headers.get("x-request-id")
+        log.error("Dataspace unlock failed (%s) corr=%s path=%s body=%s",
+                  r.status_code, corr, path, r.text)
+        raise
+
+async def delete_dataspace(access_token: str, path: str) -> None:
+    """
+    DELETE /api/reservoir-ddms/v2/dataspaces/{dataspaceId}
+    """
+    enc = urllib.parse.quote(path, safe="")
+    url = f"https://{OSDU_BASE_URL}/api/reservoir-ddms/v2/dataspaces/{enc}"
+    hdr = headers(access_token)
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.delete(url, headers=hdr)
+    try:
+        r.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        corr = r.headers.get("x-correlation-id") or r.headers.get("x-request-id")
+        log.error("Dataspace delete failed (%s) corr=%s path=%s body=%s",
+                  r.status_code, corr, path, r.text)
+        raise
+
+def _dataspace_uri(path: str) -> str:
+    # Canonical form seen in responses: eml:///dataspace('demo/Volve')
+    return f"eml:///dataspace('{path}')"
+
+async def build_manifest(
+    access_token: str,
+    path: str,
+    *,
+    legal_tag: str | None = None,
+    owners: list[str] | None = None,
+    viewers: list[str] | None = None,
+    countries: list[str] | None = None,
+    create_missing_refs: bool = True,
+) -> dict:
+    """
+    POST /api/reservoir-ddms/v2/manifests/build
+    Body typically includes: uris[], acl{}, legal{}, createMissingReferences
+    """
+    url = f"https://{OSDU_BASE_URL}/api/reservoir-ddms/v2/manifests/build"
+    hdr = headers(access_token)
+
+    # Use sensible defaults if not provided
+    legal_tag = legal_tag or DEFAULT_LEGAL_TAG
+    owners = owners or DEFAULT_OWNERS
+    viewers = viewers or DEFAULT_VIEWERS
+    countries = countries or DEFAULT_COUNTRIES
+
+    body = {
+        "uris": [ _dataspace_uri(path) ],
+        "acl": {
+            "owners": owners,
+            "viewers": viewers,
+        },
+        "legal": {
+            "legaltags": [legal_tag],
+            "otherRelevantDataCountries": countries,
+        },
+        "createMissingReferences": bool(create_missing_refs),
+    }
+
+    async with httpx.AsyncClient(timeout=90) as client:
+        r = await client.post(url, headers=hdr, json=body)
+    try:
+        r.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        corr = r.headers.get("x-correlation-id") or r.headers.get("x-request-id")
+        log.error("Build manifest failed (%s) corr=%s path=%s body=%s",
+                  r.status_code, corr, path, r.text)
+        raise
+    return r.json() or {}
