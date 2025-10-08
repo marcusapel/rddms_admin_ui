@@ -36,7 +36,7 @@ rddms-admin/
    |  └─ search.html
    └─ static/
       └─ app.js
-
+```
 
 sequenceDiagram
     participant U as User
@@ -53,4 +53,4 @@ sequenceDiagram
     U->>UI: Browse
     UI->>RDDMS: Bearer access_token (list types/arrays)
     UI->>SEARCH: POST /api/search/v2/query (data-partition-id)
-```
+
