@@ -38,6 +38,9 @@ rddms-admin/
       └─ app.js
 ```
 
+### Sequence Diagram
+
+
 sequenceDiagram
     participant U as User
     participant UI as Admin UI
