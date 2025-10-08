@@ -40,7 +40,7 @@ rddms-admin/
 
 ### Sequence Diagram
 
-
+```mermaid
 sequenceDiagram
     participant U as User
     participant UI as Admin UI
@@ -56,4 +56,4 @@ sequenceDiagram
     U->>UI: Browse
     UI->>RDDMS: Bearer access_token (list types/arrays)
     UI->>SEARCH: POST /api/search/v2/query (data-partition-id)
-
+```
