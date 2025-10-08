@@ -15,7 +15,7 @@ py -m uvicorn app.main:app --reload --port 8000 --env-file .\\.env
 open http://127.0.0.1:8000/
 
 
-### Design and Sequence Diagram
+### File Architecture 
 
 ```
 rddms-admin/
@@ -38,7 +38,7 @@ rddms-admin/
       └─ app.js
 ```
 
-### Sequence Diagram
+### Auth Sequence Diagram
 
 ```mermaid
 sequenceDiagram
