@@ -1,8 +1,21 @@
-# INstall and run
-pip install uvicorn fastapi httpx jinja2 numpy multipart
+# OSDU RDDMS admin ui web client
+
+
+## Install and run
+
+Auth: 
+store your adme refresh_token as env variable or in .env file
+
+Requires: 
+python libs: uvicorn fastapi httpx jinja2 numpy multipart
+
+Call:
 py -m uvicorn app.main:app --reload --port 8000 --env-file .\.env
 
-# open http://localhost:8000
+open http://localhost:8000
+
+
+### Design 
 
 rddms-admin/
 ├─ requirements.txt
@@ -15,6 +28,7 @@ rddms-admin/
    │  ├─ base.html
    │  ├─ index.html
    │  ├─ dataspace.html
+   │  ├─ keys.html
    │  ├─ resource.html
    │  ├─ create.html
    │  ├─ _fragments.html
@@ -22,7 +36,8 @@ rddms-admin/
    └─ static/
       └─ app.js
 
-sequenceDiagram
+### Sequence Diagram
+
   participant U as User
   participant UI as Admin UI
   participant AAD as Microsoft Identity Platform
