@@ -12,6 +12,7 @@ from fastapi import FastAPI, Request, Form, HTTPException, Query
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from app.ingest_router import router as ingest_router
 
 from . import osdu
 from .auth import (
@@ -43,6 +44,8 @@ async def no_transform_headers(request: Request, call_next):
 
 # Routers & static
 app.include_router(auth_router)
+app.include_router(ingest_router, prefix="/api")
+
 app.mount(
     "/static",
     StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")),
@@ -609,3 +612,4 @@ async def dataspaces_manifest(
             status_code=r.status_code or 500,
         )
     return JSONResponse({"status": "ok", "manifest": manifest})
+
