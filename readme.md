@@ -28,14 +28,12 @@ rddms-admin/
    ├─ templates/
    │  ├─ base.html
    │  ├─ index.html
-   │  ├─ dataspace.html
    │  ├─ keys.html
    │  ├─ resource.html
-   │  ├─ create.html
    │  ├─ _fragments.html
    |  └─ search.html
    └─ static/
-      └─ app.js
+
 ```
 
 ### Auth Sequence Diagram
