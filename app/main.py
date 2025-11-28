@@ -1,30 +1,30 @@
-from __future__ import annotations
 
+from __future__ import annotations
 import os
 import urllib.parse
 import logging
 import json
 import numpy as np
 import httpx
-
+from typing import List, Dict, Any
 from httpx import HTTPStatusError
+
 from fastapi import FastAPI, Request, Form, HTTPException, Query
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from app.ingest_router import router as ingest_router
 
+# App modules
+from app.ingest_router import router as ingest_router
 from . import osdu
 from .auth import (
     router as auth_router,
-    get_access_token_from_cookie,
     tokens_from_env,
-    ser,
 )
 
-# ----------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────
 # App setup
-# ----------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO)
 )
@@ -42,10 +42,31 @@ async def no_transform_headers(request: Request, call_next):
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
     return resp
 
-# Routers & static
-app.include_router(auth_router)
-app.include_router(ingest_router, prefix="/api")
+# ─────────────────────────────────────────────────────────────
+# Auth: server-side refresh-token minting (no cookies)
+# ─────────────────────────────────────────────────────────────
+@app.middleware("http")
+async def inject_access_token(request: Request, call_next):
+    """
+    Mint a fresh access_token from REFRESH_TOKEN and attach to request.state.
+    Fails fast with 401 if unavailable.
+    """
+    try:
+        tokens = await tokens_from_env()
+        if not tokens or not tokens.get("access_token"):
+            return JSONResponse(
+                {"error": "Authentication failed: missing/invalid refresh_token"},
+                status_code=401,
+            )
+        request.state.access_token = tokens["access_token"]
+    except Exception as e:
+        log.error("Failed to mint access token: %s", e)
+        return JSONResponse({"error": f"Authentication failed: {e}"}, status_code=401)
+    return await call_next(request)
 
+# Attach routers & static
+app.include_router(auth_router)  # keeps /auth diagnostics
+app.include_router(ingest_router, prefix="/api")
 app.mount(
     "/static",
     StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")),
@@ -55,42 +76,18 @@ templates = Jinja2Templates(
     directory=os.path.join(os.path.dirname(__file__), "templates")
 )
 
-# ----------------------------------------------------------------------
-# Middleware: auto-login via env refresh_token for GET/HEAD requests
-# ----------------------------------------------------------------------
-@app.middleware("http")
-async def auto_login_middleware(request: Request, call_next):
-    path = request.url.path or "/"
-    try:
-        if (
-            request.method in ("GET", "HEAD")
-            and not request.cookies.get("oidc_tokens")
-            and not path.startswith("/static")
-            and not path.startswith("/auth")
-            and not path.startswith("/login")
-            and not path.startswith("/logout")
-        ):
-            tokens = await tokens_from_env()
-            if tokens:
-                resp = RedirectResponse(str(request.url), status_code=302)
-                resp.set_cookie("oidc_tokens", ser.dumps(tokens), httponly=True, samesite="lax")
-                return resp
-    except Exception as e:
-        log.warning("Auto-login via env refresh_token skipped: %s", e)
-    return await call_next(request)
-
-# ----------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────
 # Utilities
-# ----------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────
 def _access_token(request: Request) -> str:
-    at = get_access_token_from_cookie(request)
+    at = getattr(request.state, "access_token", None)
     if not at:
-        raise HTTPException(401, "Please sign in: /login or /login/auto")
+        raise HTTPException(401, "Authentication failed")
     return at
 
-# ----------------------------------------------------------------------
-# Pages & actions
-# ----------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────
+# Pages & actions (unchanged user logic)
+# ─────────────────────────────────────────────────────────────
 @app.get("/", response_class=HTMLResponse, summary="Home: list dataspaces")
 async def home(request: Request):
     try:
@@ -255,10 +252,9 @@ async def array_read(request: Request, ds: str, typ: str, uuid: str, path: str):
     }
     return JSONResponse({"stats": stats})
 
-# ----------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────
 # Guided Create Forms (server endpoints)
-# ----------------------------------------------------------------------
-
+# ─────────────────────────────────────────────────────────────
 @app.post("/d/{ds:path}/new/property-kind", summary="Create resqml20.obj_PropertyKind")
 async def create_property_kind(
     request: Request,
@@ -364,10 +360,9 @@ async def create_grid2d(
     res = await osdu.create_resource(at, enc, "resqml20.obj_Grid2dRepresentation", body) if hasattr(osdu, "create_resource") else {"warning": "create_resource not implemented"}
     return JSONResponse({"status": "ok", "created": res})
 
-# ----------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────
 # Search
-# ----------------------------------------------------------------------
-
+# ─────────────────────────────────────────────────────────────
 @app.get("/search", response_class=HTMLResponse, summary="Search form (OSDU search v2)")
 async def search_page(request: Request):
     return templates.TemplateResponse("search.html", {"request": request})
@@ -393,10 +388,9 @@ async def search_run(
         {"request": request, "results": res, "kind": kind, "q": query},
     )
 
-# ----------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────
 # KEYS page: dataspace -> type -> object
-# ----------------------------------------------------------------------
-
+# ─────────────────────────────────────────────────────────────
 @app.get("/keys", response_class=HTMLResponse)
 async def keys_page(request: Request):
     prefill_ds = []
@@ -494,49 +488,32 @@ async def keys_object(
 ):
     at = _access_token(request)
     enc = urllib.parse.quote(ds, safe="")
-
     # Metadata (with referencedContent - reserved for future)
     obj = await osdu.get_resource(at, enc, typ, uuid, include_refs=True)
-
-    # --- Normalize possible list shapes to a single dict for UI --------
+    # --- Normalize possible list shapes to a single dict for UI ---
     raw_obj = obj  # keep a copy for return (diagnostics)
     if isinstance(obj, list):
         # pick the first dict item if present; else empty dict
         obj = next((x for x in obj if isinstance(x, dict)), {}) if obj else {}
-
     if not isinstance(obj, dict):
         # If we still don't have a dict, downgrade gracefully
-        return JSONResponse(
-            {"obj": obj, "raw": raw_obj, "edges": [], "arrays": [], "geom": None}
-        )
-
+        return JSONResponse({"obj": obj, "raw": raw_obj, "edges": [], "arrays": [], "geom": None})
     # Edges
     edges = osdu.extract_refs(obj) if hasattr(osdu, "extract_refs") else []
-
     # Arrays
     try:
         arrays = await osdu.list_arrays(at, enc, typ, uuid)
     except Exception:
         arrays = []
-
     # Geometry (Grid2d only)
     t = (obj.get("$type") or obj.get("contentType") or "")
     is_grid2d = t.endswith("Grid2dRepresentation") or "obj_Grid2dRepresentation" in t
     geom = osdu.extract_grid2d_geometry(obj) if (is_grid2d and hasattr(osdu, "extract_grid2d_geometry")) else None
-
     return JSONResponse({"obj": obj, "raw": raw_obj, "edges": edges, "arrays": arrays, "geom": geom})
 
-# app/main.py
-from fastapi import Form
-from fastapi.responses import JSONResponse
-from httpx import HTTPStatusError
-
-# app/main.py
-from fastapi import Form
-from fastapi.responses import JSONResponse
-from httpx import HTTPStatusError
-
-# --- Delete (you already added similar; keep one version) ---
+# ─────────────────────────────────────────────────────────────
+# Dataspace admin endpoints (delete/lock/unlock/manifest)
+# ─────────────────────────────────────────────────────────────
 @app.post("/dataspaces/delete", summary="Delete a dataspace")
 async def dataspaces_delete(request: Request, path: str = Form(...)):
     at = _access_token(request)
@@ -555,7 +532,6 @@ async def dataspaces_delete(request: Request, path: str = Form(...)):
         )
     return JSONResponse({"status": "ok"})
 
-# --- NEW: Lock ---
 @app.post("/dataspaces/lock", summary="Lock a dataspace")
 async def dataspaces_lock(request: Request, path: str = Form(...)):
     at = _access_token(request)
@@ -569,7 +545,6 @@ async def dataspaces_lock(request: Request, path: str = Form(...)):
         )
     return JSONResponse({"status": "ok"})
 
-# --- NEW: Unlock ---
 @app.post("/dataspaces/unlock", summary="Unlock a dataspace")
 async def dataspaces_unlock(request: Request, path: str = Form(...)):
     at = _access_token(request)
@@ -583,7 +558,6 @@ async def dataspaces_unlock(request: Request, path: str = Form(...)):
         )
     return JSONResponse({"status": "ok"})
 
-# --- NEW: Build Manifest ---
 @app.post("/dataspaces/manifest", summary="Build OSDU manifest for a dataspace")
 async def dataspaces_manifest(
     request: Request,
@@ -612,4 +586,3 @@ async def dataspaces_manifest(
             status_code=r.status_code or 500,
         )
     return JSONResponse({"status": "ok", "manifest": manifest})
-
