@@ -4,13 +4,6 @@
 {% block content %}
 
 
-{% if not request.cookies.get('oidc_tokens') %}
-<div style="background:#ffdddd;padding:8px;border:1px solid #cc0000;">
-    Not signed in. Please /loginlogin</a>.
-</div>
-{% endif %}
-
-
 <style>
   /* Lightweight styling to keep things readable if your base has no CSS */
   h1, h2 { margin: .25rem 0 .5rem; }

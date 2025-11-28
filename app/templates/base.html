@@ -33,13 +33,6 @@
     </nav>
   </header>
 
-  {% if not request.cookies.get('oidc_tokens') %}
-    <div class="banner">
-      Not signed in. If you're running locally and have <code>REFRESH_TOKEN</code> or
-      <code>refresh_token</code> set in your environment, use the Login link in the header.
-    </div>
-  {% endif %}
-
   <main>
     {% block content %}{% endblock %}
   </main>
@@ -74,9 +67,9 @@
       root.appendChild(linkSpan('/keys', 'Resources'));   // <<< NEW
       root.appendChild(el('span', { 'class': 'muted' }, ' | '));
 
-      var encNext = encodeURIComponent(current);
-      root.appendChild(linkSpan('/login/auto?next=' + encNext, 'Login'));
-      root.appendChild(linkSpan('/logout', 'Logout'));
+      //var encNext = encodeURIComponent(current);
+      //root.appendChild(linkSpan('/login/auto?next=' + encNext, 'Login'));
+      //root.appendChild(linkSpan('/logout', 'Logout'));
       // --------------------------------
     }
 
