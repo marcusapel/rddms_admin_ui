@@ -1,18 +1,20 @@
 
 from __future__ import annotations
+
 import os
 import urllib.parse
 import logging
 import json
 import numpy as np
 import httpx
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from httpx import HTTPStatusError
 
 from fastapi import FastAPI, Request, Form, HTTPException, Query
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.responses import Response
 
 # App modules
 from app.ingest_router import router as ingest_router
@@ -22,19 +24,18 @@ from .auth import (
     tokens_from_env,
 )
 
-# ─────────────────────────────────────────────────────────────
-# App setup
-# ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# App setup & logging
+# ─────────────────────────────────────────────────────────────────────────────
 logging.basicConfig(
-    level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO)
+    level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO),
+    format="%(asctime)s %(levelname)s %(name)s :: %(message)s",
 )
 log = logging.getLogger("rddms-admin")
 
 app = FastAPI(title="RDDMS Admin")
 
 # Security headers & cache hardening
-from starlette.responses import Response
-
 @app.middleware("http")
 async def no_transform_headers(request: Request, call_next):
     resp: Response = await call_next(request)
@@ -42,9 +43,7 @@ async def no_transform_headers(request: Request, call_next):
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
     return resp
 
-# ─────────────────────────────────────────────────────────────
 # Auth: server-side refresh-token minting (no cookies)
-# ─────────────────────────────────────────────────────────────
 @app.middleware("http")
 async def inject_access_token(request: Request, call_next):
     """
@@ -54,10 +53,8 @@ async def inject_access_token(request: Request, call_next):
     try:
         tokens = await tokens_from_env()
         if not tokens or not tokens.get("access_token"):
-            return JSONResponse(
-                {"error": "Authentication failed: missing/invalid refresh_token"},
-                status_code=401,
-            )
+            log.error("Auth failed: missing/invalid refresh_token")
+            return JSONResponse({"error": "Authentication failed: missing/invalid refresh_token"}, status_code=401)
         request.state.access_token = tokens["access_token"]
     except Exception as e:
         log.error("Failed to mint access token: %s", e)
@@ -67,6 +64,7 @@ async def inject_access_token(request: Request, call_next):
 # Attach routers & static
 app.include_router(auth_router)  # keeps /auth diagnostics
 app.include_router(ingest_router, prefix="/api")
+
 app.mount(
     "/static",
     StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")),
@@ -76,24 +74,28 @@ templates = Jinja2Templates(
     directory=os.path.join(os.path.dirname(__file__), "templates")
 )
 
-# ─────────────────────────────────────────────────────────────
+# Log routes at startup (helps when a route goes missing)
+log.info("Routes registered: %s", [getattr(r, "path", str(r)) for r in app.routes])
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Utilities
-# ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 def _access_token(request: Request) -> str:
     at = getattr(request.state, "access_token", None)
     if not at:
         raise HTTPException(401, "Authentication failed")
     return at
 
-# ─────────────────────────────────────────────────────────────
-# Pages & actions (unchanged user logic)
-# ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Pages & actions
+# ─────────────────────────────────────────────────────────────────────────────
 @app.get("/", response_class=HTMLResponse, summary="Home: list dataspaces")
 async def home(request: Request):
     try:
         at = _access_token(request)
         dataspaces = await osdu.list_dataspaces(at)
-    except Exception:
+    except Exception as e:
+        log.warning("List dataspaces failed: %s", e)
         dataspaces = []
     return templates.TemplateResponse(
         "index.html",
@@ -121,9 +123,8 @@ async def dataspaces_create(
     custom_json: str = Form("", description="Optional JSON to merge into CustomData"),
 ):
     at = _access_token(request)
-
     # Parse optional JSON block
-    extra_custom = {}
+    extra_custom: Dict[str, Any] = {}
     if custom_json and custom_json.strip():
         try:
             extra_custom = json.loads(custom_json)
@@ -146,7 +147,6 @@ async def dataspaces_create(
                 },
                 status_code=400,
             )
-
     try:
         await osdu.create_dataspace(
             at,
@@ -159,7 +159,6 @@ async def dataspaces_create(
         )
     except HTTPStatusError as e:
         r = e.response
-        # Show a user-friendly message instead of a stacktrace
         return templates.TemplateResponse(
             "index.html",
             {
@@ -176,7 +175,6 @@ async def dataspaces_create(
             },
             status_code=400,
         )
-
     return RedirectResponse(url=f"/d/{urllib.parse.quote(path, safe='')}", status_code=302)
 
 @app.get("/d/{ds:path}", response_class=HTMLResponse, summary="Dataspace view: types")
@@ -252,9 +250,9 @@ async def array_read(request: Request, ds: str, typ: str, uuid: str, path: str):
     }
     return JSONResponse({"stats": stats})
 
-# ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # Guided Create Forms (server endpoints)
-# ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 @app.post("/d/{ds:path}/new/property-kind", summary="Create resqml20.obj_PropertyKind")
 async def create_property_kind(
     request: Request,
@@ -360,37 +358,141 @@ async def create_grid2d(
     res = await osdu.create_resource(at, enc, "resqml20.obj_Grid2dRepresentation", body) if hasattr(osdu, "create_resource") else {"warning": "create_resource not implemented"}
     return JSONResponse({"status": "ok", "created": res})
 
-# ─────────────────────────────────────────────────────────────
-# Search
-# ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Search (OSDU search v2) — with robust debug logs & graceful HTML
+# ─────────────────────────────────────────────────────────────────────────────
 @app.get("/search", response_class=HTMLResponse, summary="Search form (OSDU search v2)")
 async def search_page(request: Request):
-    return templates.TemplateResponse("search.html", {"request": request})
+    # Pre-fill demo values
+    return templates.TemplateResponse(
+        "search.html",
+        {
+            "request": request,
+            "kind": "osdu:wks:work-product-component--ReservoirEstimatedVolumes:1.1.0",
+            "q": "*",
+            "limit": 5,
+            "returnedFields": "id,kind,version,data.Name,data.Description,ancestry.parents,data.ParentObjectID",
+        },
+    )
 
 @app.post(
     "/search/run",
     response_class=HTMLResponse,
-    summary="Run OSDU /api/search/v2/query",
+    summary="Run OSDU /api/search/v2/query (with fields & relationship expansion)",
 )
 async def search_run(
-    request: Request, kind: str = Form("*:*:*:*"), query: str = Form("*"), limit: int = Form(20)
+    request: Request,
+    kind: str = Form("osdu:wks:work-product-component--ReservoirEstimatedVolumes:1.1.0"),
+    query: str = Form("*"),
+    limit: int = Form(5),
+    returnedFields: str = Form("id,kind,version,data.Name,data.Description,ancestry.parents,data.ParentObjectID"),
 ):
+    # Log incoming form values
+    log.info("[SEARCH] form kind=%s query=%s limit=%s returnedFields=%s", kind, query, limit, returnedFields)
+
     at = _access_token(request)
     url = f"https://{osdu.OSDU_BASE_URL}/api/search/v2/query"
-    hdr = osdu.headers(at)
-    payload = {"kind": kind, "query": query, "limit": int(limit)}
-    async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.post(url, headers=hdr, json=payload)
-        r.raise_for_status()
-        res = r.json()
+    hdr = osdu.headers(at)  # should include data-partition-id from .env and Content-Type: application/json
+    hdr.setdefault("Accept", "*/*")  # curl parity
+
+    fields = [x.strip() for x in (returnedFields or "").split(",") if x.strip()]
+    payload = {
+        "kind": kind,
+        "query": query,
+        "limit": int(limit),
+        "returnedFields": fields or ["id", "kind"],
+        "trackTotalCount": True,
+    }
+
+    log.debug("[SEARCH] POST %s", url)
+    log.debug("[SEARCH] headers=%s", hdr)
+    log.debug("[SEARCH] payload=%s", payload)
+
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.post(url, headers=hdr, json=payload)
+            log.info("[SEARCH] status=%d size=%d", r.status_code, len(r.content))
+            r.raise_for_status()
+            res = r.json()
+            log.debug("[SEARCH] response keys=%s", list(res.keys()))
+
+            # Build children map: for each record, search who lists it in ancestry.parents ("id:version")
+            children_by_id: Dict[str, List[Dict[str, str]]] = {}
+            for rec in res.get("results", []) or []:
+                rid = rec.get("id")
+                ver = rec.get("version")
+                if not (rid and ver):
+                    continue
+                q_children = f'ancestry.parents:"{rid}:{ver}"'
+                p2 = {
+                    "kind": "*:*:*:*",
+                    "query": q_children,
+                    "limit": 50,
+                    "returnedFields": ["id", "kind"],
+                }
+                log.debug("[SEARCH] child-query rid=%s: %s", rid, q_children)
+                try:
+                    r2 = await client.post(url, headers=hdr, json=p2)
+                    log.info("[SEARCH] child status=%d size=%d", r2.status_code, len(r2.content))
+                    if r2.status_code == 200:
+                        js2 = r2.json()
+                        children_by_id[rid] = [
+                            {"id": c.get("id", ""), "kind": c.get("kind", "")}
+                            for c in js2.get("results", []) or []
+                        ]
+                except Exception as ce:
+                    log.warning("[SEARCH] child lookup failed for %s: %s", rid, ce)
+
+    except HTTPStatusError as e:
+        r = e.response
+        log.error("[SEARCH] HTTP error: %s %s :: %s", r.status_code, r.reason_phrase, r.text[:1000])
+        # Render a graceful error on the page
+        return templates.TemplateResponse(
+            "search.html",
+            {
+                "request": request,
+                "kind": kind,
+                "q": query,
+                "limit": limit,
+                "returnedFields": returnedFields,
+                "error": f"Search failed: {r.status_code} {r.reason_phrase}",
+                "error_detail": (r.text[:2000] if r.text else ""),
+            },
+            status_code=r.status_code or 500,
+        )
+    except Exception as e:
+        log.error("[SEARCH] unexpected error: %s", e)
+        return templates.TemplateResponse(
+            "search.html",
+            {
+                "request": request,
+                "kind": kind,
+                "q": query,
+                "limit": limit,
+                "returnedFields": returnedFields,
+                "error": "Unexpected error",
+                "error_detail": str(e),
+            },
+            status_code=500,
+        )
+
+    # Render table + mermaid (no raw JSON)
     return templates.TemplateResponse(
         "search.html",
-        {"request": request, "results": res, "kind": kind, "q": query},
+        {
+            "request": request,
+            "results": res,
+            "kind": kind,
+            "q": query,
+            "limit": limit,
+            "returnedFields": returnedFields,
+            "children_by_id": children_by_id,
+        },
     )
 
-# ─────────────────────────────────────────────────────────────
-# KEYS page: dataspace -> type -> object
-# ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# KEYS page: dataspace -> type -> object (kept for convenience)
+# ─────────────────────────────────────────────────────────────────────────────
 @app.get("/keys", response_class=HTMLResponse)
 async def keys_page(request: Request):
     prefill_ds = []
@@ -398,7 +500,8 @@ async def keys_page(request: Request):
         at = _access_token(request)
         rows = await osdu.list_dataspaces(at)
         prefill_ds = [{"path": x.get("path", ""), "uri": x.get("uri", "")} for x in (rows or []) if x.get("path")]
-    except Exception:
+    except Exception as e:
+        log.warning("keys_page list_dataspaces failed: %s", e)
         prefill_ds = []
     return templates.TemplateResponse(
         "keys.html",
@@ -411,7 +514,8 @@ async def keys_dataspaces(request: Request):
     at = _access_token(request)
     try:
         rows = await osdu.list_dataspaces(at)
-    except Exception:
+    except Exception as e:
+        log.warning("keys_dataspaces failed: %s", e)
         rows = []
     items = [{"path": x.get("path"), "uri": x.get("uri")} for x in rows if x.get("path")]
     return JSONResponse({"items": items})
@@ -428,7 +532,8 @@ async def keys_types(
         enc = urllib.parse.quote(ds, safe="")
         try:
             rows = await osdu.list_types(at, enc)
-        except Exception:
+        except Exception as e:
+            log.warning("keys_types list_types failed: %s", e)
             rows = []
         for r in rows or []:
             name = r.get("name") if isinstance(r, dict) else r
@@ -503,7 +608,8 @@ async def keys_object(
     # Arrays
     try:
         arrays = await osdu.list_arrays(at, enc, typ, uuid)
-    except Exception:
+    except Exception as e:
+        log.warning("keys_object list_arrays failed: %s", e)
         arrays = []
     # Geometry (Grid2d only)
     t = (obj.get("$type") or obj.get("contentType") or "")
@@ -511,9 +617,9 @@ async def keys_object(
     geom = osdu.extract_grid2d_geometry(obj) if (is_grid2d and hasattr(osdu, "extract_grid2d_geometry")) else None
     return JSONResponse({"obj": obj, "raw": raw_obj, "edges": edges, "arrays": arrays, "geom": geom})
 
-# ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # Dataspace admin endpoints (delete/lock/unlock/manifest)
-# ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 @app.post("/dataspaces/delete", summary="Delete a dataspace")
 async def dataspaces_delete(request: Request, path: str = Form(...)):
     at = _access_token(request)

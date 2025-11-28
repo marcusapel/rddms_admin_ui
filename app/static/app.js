@@ -36,10 +36,10 @@
     root.appendChild(el('span', { 'class': 'muted' }, ' | '));
 
     // LOGIN (auto) — preserve ?next=current
-    const encNext = encodeURIComponent(current);
-    root.appendChild(linkSpan('/login/auto?next=' + encNext, 'Login'));
+    //const encNext = encodeURIComponent(current);
+    //root.appendChild(linkSpan('/login/auto?next=' + encNext, 'Login'));
     // LOGOUT
-    root.appendChild(linkSpan('/logout', 'Logout'));
+    //root.appendChild(linkSpan('/logout', 'Logout'));
   }
 
   // Build nav asap after DOM is parsed

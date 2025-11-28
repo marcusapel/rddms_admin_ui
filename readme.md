@@ -10,7 +10,7 @@ Requires:
 python libs: uvicorn fastapi httpx jinja2 numpy multipart
 
 Call:
-py -m uvicorn app.main:app --reload --port 8000 --env-file .\\.env
+py -m uvicorn app.main:app --reload --port 8000 --host localhost --env-file .\.env
 
 open http://127.0.0.1:8000/
 

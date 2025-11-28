@@ -6,3 +6,243 @@ jinja2==3.1.4
 itsdangerous==2.2.0
 authlib==1.3.1
 numpy==2.1.1
+
+
+
+
+networkx>=3.2
+pyvis>=0.3.2
+httpx>=0.27
+python-dotenv>=1.0
+
+
+***
+
+## TL;DR
+
+*   **Mermaid**: Text‑based diagrams rendered client‑side in the browser. Quick to generate, low server overhead, great for documentation and simple graphs. Limited programmatic graph analytics.
+*   **NetworkX (≥ 3.2)**: Python graph **modeling & analytics** (centrality, community detection, shortest paths). No built‑in visualization; you use it to build and analyze the graph in memory.
+*   **PyVis (≥ 0.3.2)**: **Interactive HTML graph visualization** (based on vis.js). Takes a NetworkX graph (or nodes/edges) and produces an HTML/JS visualization you can embed.
+*   **httpx (≥ 0.27)**: Async HTTP client (you already use it) for calling OSDU APIs.
+*   **python‑dotenv (≥ 1.0)**: Load environment variables from a `.env` file (OSDU base URL, tokens, etc.)—handy for local dev and deployment.
+
+***
+
+## When to use what?
+
+| Need                                                                          | Best fit                              |
+| ----------------------------------------------------------------------------- | ------------------------------------- |
+| Fast, lightweight relationship view with zero backend processing              | **Mermaid** in the search page        |
+| Compute graph metrics (e.g., “most referenced objects”, connected components) | **NetworkX**                          |
+| Interactive graph (pan/zoom/drag, tooltips), embedded in your page            | **PyVis** (often fed by **NetworkX**) |
+| Call OSDU REST (search, get object, arrays)                                   | **httpx** (already in your app)       |
+| Manage tokens/URLs/secrets without hardcoding                                 | **python‑dotenv**                     |
+
+***
+
+## Architecture options for your search page
+
+### Option A: Mermaid only (simplest)
+
+*   **Pros**: Minimal code; quick to render; easy to maintain.
+*   **Cons**: Less interactive; limited styling; no analytics (e.g., centrality).
+
+### Option B: NetworkX + PyVis (feature‑rich)
+
+*   **Pros**: Real graph model, analytics, dynamic layout; interactive UI.
+*   **Cons**: Slightly more server work; includes JS payload (vis.js) in page.
+
+You can even **combine** them:
+
+*   Use **NetworkX** to compute structure/metrics.
+*   Render **Mermaid** for quick overview.
+*   Provide a **“Open interactive graph”** button that loads a PyVis view.
+
+***
+
+## How they wire into your existing app
+
+You already have `main.py` (FastAPI) and a `/search/run` endpoint using `httpx`. We add:
+
+1.  **Graph builder** (NetworkX): turn records + relationships into a graph.
+2.  **Visualizer** (PyVis): export HTML snippet (or full page) to embed.
+3.  **Env handling** (python‑dotenv): simplify configuration.
+
+### 1) Install (versions you proposed)
+
+```bash
+pip install "networkx>=3.2" "pyvis>=0.3.2" "httpx>=0.27" "python-dotenv>=1.0"
+```
+
+### 2) Load env early (e.g., in `main.py`)
+
+```python
+from dotenv import load_dotenv
+load_dotenv()  # reads .env into process env
+```
+
+`.env` example:
+
+```env
+OSDU_BASE_URL=my-osdu-host.example.com
+REFRESH_TOKEN=...
+LOG_LEVEL=INFO
+```
+
+### 3) Build a graph from OSDU results (NetworkX)
+
+```python
+import networkx as nx
+
+def build_osdu_graph(items):
+    """
+    items: list of dicts like {
+        "uuid": "...",
+        "title": "...",
+        "type": "...",
+        "relationships": [{"uuid": "...", "title": "...", "type": "..."} ...]
+    }
+    """
+    G = nx.DiGraph()
+    for r in items:
+        nid = (r.get("uuid") or r.get("title") or "unknown").replace("-", "_")
+        G.add_node(nid, label=r.get("title") or r.get("uuid"), typ=r.get("type"))
+        for rel in r.get("relationships") or []:
+            tid = (rel.get("uuid") or rel.get("title") or "unknown").replace("-", "_")
+            # Ensure target node exists (with best-effort label/type)
+            if tid not in G:
+                G.add_node(tid, label=rel.get("title") or rel.get("uuid"), typ=rel.get("type"))
+            G.add_edge(nid, tid)
+    return G
+```
+
+### 4) Render an interactive visualization (PyVis)
+
+```python
+from pyvis.network import Network
+import os
+
+def pyvis_html_from_graph(G, height="600px", width="100%", physics=True):
+    net = Network(height=height, width=width, directed=True, notebook=False)
+    net.toggle_physics(physics)
+    # Map NetworkX nodes/edges to PyVis
+    for node, data in G.nodes(data=True):
+        label = data.get("label") or node
+        typ = data.get("typ") or ""
+        color = "#4B9CD3" if "Grid2dRepresentation" in typ else "#78A300" if "LocalDepth3dCrs" in typ else "#999999"
+        net.add_node(node, label=label, title=typ, color=color)
+    for u, v in G.edges():
+        net.add_edge(u, v, arrows="to")
+    # Return HTML as string (no file write)
+    return net.generate_html(notebook=False)
+```
+
+### 5) Integrate into `/search/run`
+
+We keep your existing JSON and add graph outputs (Mermaid + PyVis):
+
+```python
+@app.post("/search/run", response_class=HTMLResponse)
+async def search_run(request: Request, kind: str = Form("*:*:*:*"), query: str = Form("*"), limit: int = Form(20)):
+    at = _access_token(request)
+    url = f"https://{osdu.OSDU_BASE_URL}/api/search/v2/query"
+    hdr = osdu.headers(at)
+    payload = {"kind": kind, "query": query, "limit": int(limit)}
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(url, headers=hdr, json=payload)
+        r.raise_for_status()
+        res = r.json()
+
+    # Normalize results (like we discussed)
+    items = []
+    for item in res.get("results", []):
+        uuid = item.get("Uuid") or item.get("UUID") or item.get("id")
+        title = (item.get("Citation") or {}).get("Title") or item.get("name") or (uuid or "Untitled")
+        typ = item.get("$type") or item.get("contentType") or item.get("kind") or ""
+        rels = osdu.extract_refs(item) if hasattr(osdu, "extract_refs") else []
+        # Expect rels as list of dicts with UUID/title/type; otherwise adapt here.
+        items.append({"uuid": uuid, "title": title, "type": typ, "relationships": rels})
+
+    # Mermaid text block (simple)
+    mermaid_lines = ["graph TD"]
+    defined = set()
+    def label(t, ty): return f'{t} ({ty})' if ty else t
+    for r in items:
+        nid = (r["uuid"] or r["title"] or "unknown").replace("-", "_")
+        if nid not in defined:
+            mermaid_lines.append(f'{nid}["{label(r["title"], r["type"])}"]')
+            defined.add(nid)
+        for rel in r.get("relationships") or []:
+            tid = (rel.get("uuid") or rel.get("title") or "unknown").replace("-", "_")
+            if tid not in defined:
+                mermaid_lines.append(f'{tid}["{label(rel.get("title") or tid, rel.get("type") or "")}"]')
+                defined.add(tid)
+            mermaid_lines.append(f"{nid} --> {tid}")
+    mermaid_graph = "\n".join(mermaid_lines)
+
+    # PyVis interactive HTML
+    G = build_osdu_graph(items)
+    pyvis_html = pyvis_html_from_graph(G)
+
+    return templates.TemplateResponse(
+        "search.html",
+        {
+            "request": request,
+            "results": items,
+            "kind": kind,
+            "q": query,
+            "mermaid_graph": mermaid_graph,
+            "pyvis_html": pyvis_html,
+        },
+    )
+```
+
+### 6) Update `search.html` to show both
+
+
+
+***
+
+## Tradeoffs vs. Mermaid
+
+*   **Mermaid** is ideal for **static** DAG/graph previews; it’s text‑first and fast. But it doesn’t compute graph algorithms (no centrality, clustering).
+*   **NetworkX** lets you compute useful **analytics** for exploration:
+    *   In‑degree/out‑degree → “objects referenced most”
+    *   Betweenness/Closeness centrality → “key linking objects”
+    *   Connected components → “islands in the data”
+*   **PyVis** renders these graphs interactively. You can feed NetworkX node attributes (e.g., color by `$type`, size by degree), producing a richer exploration experience.
+
+Example: enrich node size by degree:
+
+```python
+deg = dict(G.degree())
+for node in G.nodes():
+    size = 10 + 2 * deg.get(node, 0)
+    # PyVis add_node(..., size=size)
+```
+
+***
+
+## Handling OSDU ColumnBasedTable
+
+For ColumnBasedTable specifically:
+
+*   Keep a **tabular view** in the record card.
+*   Optionally **summarize** columns as node attributes (e.g., number of columns, row count) and show in tooltips (PyVis `title`).
+*   You can **link** a property node to a table node, allowing users to navigate from the graph to tabular content.
+
+Minimal table render (Jinja):
+
+
+
+*(You’ll need to adapt to your actual ColumnBasedTable shape—some OSDU payloads store columns as `{name: [...values...]}`, which would require column‑wise to row‑wise conversion.)*
+
+***
+
+## Recommendation for your app
+
+*   Keep Mermaid as the **quick overview** (low friction).
+*   Add NetworkX + PyVis for **deep exploration** and **interactivity**.
+*   Use python‑dotenv to remove secrets from code and simplify deployment.
+
+If you share a concrete sample of `extract_refs(obj)` output and a typical `ColumnBasedTable` record from your OSDU, I’ll tailor the node/edge mapping and table renderer to your exact schema (including type‑based coloring and tooltips).
