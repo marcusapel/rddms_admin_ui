@@ -1,6 +1,5 @@
 
 from __future__ import annotations
-
 import os
 import urllib.parse
 import logging
@@ -9,7 +8,6 @@ import numpy as np
 import httpx
 from typing import List, Dict, Any, Optional
 from httpx import HTTPStatusError
-
 from fastapi import FastAPI, Request, Form, HTTPException, Query
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -24,9 +22,9 @@ from .auth import (
     tokens_from_env,
 )
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────────────────
 # App setup & logging
-# ─────────────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO),
     format="%(asctime)s %(levelname)s %(name)s :: %(message)s",
@@ -64,7 +62,6 @@ async def inject_access_token(request: Request, call_next):
 # Attach routers & static
 app.include_router(auth_router)  # keeps /auth diagnostics
 app.include_router(ingest_router, prefix="/api")
-
 app.mount(
     "/static",
     StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")),
@@ -77,18 +74,69 @@ templates = Jinja2Templates(
 # Log routes at startup (helps when a route goes missing)
 log.info("Routes registered: %s", [getattr(r, "path", str(r)) for r in app.routes])
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────────────────
 # Utilities
-# ─────────────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────────────────
 def _access_token(request: Request) -> str:
     at = getattr(request.state, "access_token", None)
     if not at:
         raise HTTPException(401, "Authentication failed")
     return at
 
-# ─────────────────────────────────────────────────────────────────────────────
+
+def _normalize_volumes(data_block: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Normalize OSDU ColumnBasedTable in data_block['Volumes'] to a structure:
+      {
+        "KeyColumns": [ {ColumnName, ColumnRole, ValueType, ...}, ... ],
+        "Columns":    [ {ColumnName, ColumnRole, ValueType, ...}, ... ],
+        "ColumnValues": { "<ColumnName>": [v0, v1, ...], ... }
+      }
+
+    Handles cases where ColumnValues may arrive as a dict or as a list of objects.
+    Leaves other shapes untouched (best-effort).
+    """
+    vol = (data_block or {}).get("Volumes", {}) or {}
+
+    key_cols = vol.get("KeyColumns", []) or []
+    value_cols = vol.get("Columns", []) or []
+
+    raw_vals = vol.get("ColumnValues", {}) or {}
+
+    # Prefer dict[str, list]; attempt best-effort normalization if it's a list
+    if isinstance(raw_vals, dict):
+        col_values = raw_vals
+    elif isinstance(raw_vals, list):
+        # Case: list of dicts like {"ColumnName": "...", "Values": [...]}
+        if raw_vals and all(isinstance(x, dict) for x in raw_vals):
+            out: Dict[str, List[Any]] = {}
+            for x in raw_vals:
+                name = x.get("ColumnName") or x.get("name")
+                vals = (
+                    x.get("Values")
+                    or x.get("values")
+                    or x.get("Data")
+                    or x.get("data")
+                    or []
+                )
+                if name:
+                    out[name] = vals if isinstance(vals, list) else [vals]
+            col_values = out
+        else:
+            # Unknown shape; keep as-is (template has a fallback)
+            col_values = raw_vals
+    else:
+        col_values = raw_vals
+
+    return {
+        "KeyColumns": key_cols,
+        "Columns": value_cols,
+        "ColumnValues": col_values,
+    }
+
+# ───────────────────────────────────────────────────────────────────────────────
 # Pages & actions
-# ─────────────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────────────────
 @app.get("/", response_class=HTMLResponse, summary="Home: list dataspaces")
 async def home(request: Request):
     try:
@@ -112,6 +160,7 @@ async def home(request: Request):
         },
     )
 
+
 @app.post("/dataspaces/create", summary="Create a dataspace with default legal/ACL")
 async def dataspaces_create(
     request: Request,
@@ -123,6 +172,7 @@ async def dataspaces_create(
     custom_json: str = Form("", description="Optional JSON to merge into CustomData"),
 ):
     at = _access_token(request)
+
     # Parse optional JSON block
     extra_custom: Dict[str, Any] = {}
     if custom_json and custom_json.strip():
@@ -147,6 +197,7 @@ async def dataspaces_create(
                 },
                 status_code=400,
             )
+
     try:
         await osdu.create_dataspace(
             at,
@@ -175,7 +226,9 @@ async def dataspaces_create(
             },
             status_code=400,
         )
+
     return RedirectResponse(url=f"/d/{urllib.parse.quote(path, safe='')}", status_code=302)
+
 
 @app.get("/d/{ds:path}", response_class=HTMLResponse, summary="Dataspace view: types")
 async def dataspace_view(request: Request, ds: str):
@@ -187,6 +240,7 @@ async def dataspace_view(request: Request, ds: str):
         {"request": request, "ds": ds, "types": types},
     )
 
+
 @app.get("/d/{ds:path}/t/{typ}", response_class=HTMLResponse, summary="List resources by type")
 async def type_list(request: Request, ds: str, typ: str):
     at = _access_token(request)
@@ -196,6 +250,7 @@ async def type_list(request: Request, ds: str, typ: str):
         "_fragments.html",
         {"request": request, "frag": "type_rows", "ds": ds, "typ": typ, "rows": rows},
     )
+
 
 @app.get(
     "/d/{ds:path}/t/{typ}/{uuid}",
@@ -213,6 +268,10 @@ async def resource_view(request: Request, ds: str, typ: str, uuid: str):
         if (obj.get("$type", "") or "").endswith("Grid2dRepresentation")
         else None
     )
+    # Normalize Volumes (if present) for downstream templates
+    data_block = obj if isinstance(obj, dict) else {}
+    volumes = _normalize_volumes(data_block)
+
     return templates.TemplateResponse(
         "resource.html",
         {
@@ -224,8 +283,10 @@ async def resource_view(request: Request, ds: str, typ: str, uuid: str):
             "edges": edges,
             "arrays": arrays,
             "geom": geom,
+            "volumes": volumes,
         },
     )
+
 
 @app.get(
     "/d/{ds:path}/t/{typ}/{uuid}/arrays/read",
@@ -250,9 +311,9 @@ async def array_read(request: Request, ds: str, typ: str, uuid: str, path: str):
     }
     return JSONResponse({"stats": stats})
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────────────────
 # Guided Create Forms (server endpoints)
-# ─────────────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────────────────
 @app.post("/d/{ds:path}/new/property-kind", summary="Create resqml20.obj_PropertyKind")
 async def create_property_kind(
     request: Request,
@@ -274,6 +335,7 @@ async def create_property_kind(
     res = await osdu.create_resource(at, enc, "resqml20.obj_PropertyKind", body) if hasattr(osdu, "create_resource") else {"warning": "create_resource not implemented"}
     return JSONResponse({"status": "ok", "created": res})
 
+
 @app.post("/d/{ds:path}/new/string-lookup", summary="Create resqml20.obj_StringTableLookup")
 async def create_string_lookup(
     request: Request, ds: str, title: str = Form(...), entries: str = Form("A,B,C")
@@ -291,6 +353,7 @@ async def create_string_lookup(
     res = await osdu.create_resource(at, enc, "resqml20.obj_StringTableLookup", body) if hasattr(osdu, "create_resource") else {"warning": "create_resource not implemented"}
     return JSONResponse({"status": "ok", "created": res})
 
+
 @app.post("/d/{ds:path}/new/local-crs", summary="Create resqml20.obj_LocalDepth3dCrs (minimal)")
 async def create_local_crs(request: Request, ds: str, title: str = Form("Local Depth CRS")):
     at = _access_token(request)
@@ -305,6 +368,7 @@ async def create_local_crs(request: Request, ds: str, title: str = Form("Local D
     }
     res = await osdu.create_resource(at, enc, "resqml20.obj_LocalDepth3dCrs", body) if hasattr(osdu, "create_resource") else {"warning": "create_resource not implemented"}
     return JSONResponse({"status": "ok", "created": res})
+
 
 @app.post("/d/{ds:path}/new/grid2d", summary="Create resqml20.obj_Grid2dRepresentation (lattice)")
 async def create_grid2d(
@@ -358,9 +422,9 @@ async def create_grid2d(
     res = await osdu.create_resource(at, enc, "resqml20.obj_Grid2dRepresentation", body) if hasattr(osdu, "create_resource") else {"warning": "create_resource not implemented"}
     return JSONResponse({"status": "ok", "created": res})
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────────────────
 # Search (OSDU search v2) — with robust debug logs & graceful HTML
-# ─────────────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────────────────
 @app.get("/search", response_class=HTMLResponse, summary="Search form (OSDU search v2)")
 async def search_page(request: Request):
     # Pre-fill demo values
@@ -371,128 +435,106 @@ async def search_page(request: Request):
             "kind": "osdu:wks:work-product-component--ReservoirEstimatedVolumes:1.1.0",
             "q": "*",
             "limit": 5,
-            "returnedFields": "id,kind,version,data.Name,data.Description,ancestry.parents,data.ParentObjectID",
+            "returnedFields": "id,kind,version",
         },
     )
 
-@app.post(
-    "/search/run",
-    response_class=HTMLResponse,
-    summary="Run OSDU /api/search/v2/query (with fields & relationship expansion)",
-)
+
+@app.post("/search/run", response_class=HTMLResponse)
 async def search_run(
     request: Request,
     kind: str = Form("osdu:wks:work-product-component--ReservoirEstimatedVolumes:1.1.0"),
     query: str = Form("*"),
     limit: int = Form(5),
-    returnedFields: str = Form("id,kind,version,data.Name,data.Description,ancestry.parents,data.ParentObjectID"),
 ):
-    # Log incoming form values
-    log.info("[SEARCH] form kind=%s query=%s limit=%s returnedFields=%s", kind, query, limit, returnedFields)
-
     at = _access_token(request)
-    url = f"https://{osdu.OSDU_BASE_URL}/api/search/v2/query"
-    hdr = osdu.headers(at)  # should include data-partition-id from .env and Content-Type: application/json
-    hdr.setdefault("Accept", "*/*")  # curl parity
 
-    fields = [x.strip() for x in (returnedFields or "").split(",") if x.strip()]
+    search_url = f"https://{osdu.OSDU_BASE_URL}/api/search/v2/query"
+    storage_url = f"https://{osdu.OSDU_BASE_URL}/api/storage/v2/records"
+    hdr = osdu.headers(at)
     payload = {
         "kind": kind,
         "query": query,
         "limit": int(limit),
-        "returnedFields": fields or ["id", "kind"],
+        "returnedFields": ["id", "kind", "version"],  # minimal
         "trackTotalCount": True,
     }
 
-    log.debug("[SEARCH] POST %s", url)
-    log.debug("[SEARCH] headers=%s", hdr)
-    log.debug("[SEARCH] payload=%s", payload)
-
     try:
         async with httpx.AsyncClient(timeout=60) as client:
-            r = await client.post(url, headers=hdr, json=payload)
-            log.info("[SEARCH] status=%d size=%d", r.status_code, len(r.content))
+            # Search
+            r = await client.post(search_url, headers=hdr, json=payload)
             r.raise_for_status()
             res = r.json()
-            log.debug("[SEARCH] response keys=%s", list(res.keys()))
+            log.info("[SEARCH] Status=%d, total=%d", r.status_code, len(res.get("results", [])))
 
-            # Build children map: for each record, search who lists it in ancestry.parents ("id:version")
-            children_by_id: Dict[str, List[Dict[str, str]]] = {}
-            for rec in res.get("results", []) or []:
+            enriched_results: List[Dict[str, Any]] = []
+            for rec in res.get("results", []):
                 rid = rec.get("id")
-                ver = rec.get("version")
-                if not (rid and ver):
+                if not rid:
                     continue
-                q_children = f'ancestry.parents:"{rid}:{ver}"'
-                p2 = {
-                    "kind": "*:*:*:*",
-                    "query": q_children,
-                    "limit": 50,
-                    "returnedFields": ["id", "kind"],
-                }
-                log.debug("[SEARCH] child-query rid=%s: %s", rid, q_children)
                 try:
-                    r2 = await client.post(url, headers=hdr, json=p2)
-                    log.info("[SEARCH] child status=%d size=%d", r2.status_code, len(r2.content))
-                    if r2.status_code == 200:
-                        js2 = r2.json()
-                        children_by_id[rid] = [
-                            {"id": c.get("id", ""), "kind": c.get("kind", "")}
-                            for c in js2.get("results", []) or []
-                        ]
-                except Exception as ce:
-                    log.warning("[SEARCH] child lookup failed for %s: %s", rid, ce)
-
-    except HTTPStatusError as e:
-        r = e.response
-        log.error("[SEARCH] HTTP error: %s %s :: %s", r.status_code, r.reason_phrase, r.text[:1000])
-        # Render a graceful error on the page
+                    r_full = await client.get(f"{storage_url}/{rid}", headers=hdr)
+                    if r_full.status_code == 200:
+                        full = r_full.json()
+                        data_block = full.get("data", {}) or {}
+                        enriched_results.append({
+                            "id": full.get("id"),
+                            "kind": full.get("kind"),
+                            "version": full.get("version"),
+                            "data": data_block,
+                            "ancestry_parents": data_block.get("ancestry", {}).get("parents", []),
+                            "ancestry_children": data_block.get("ancestry", {}).get("children", []),
+                            # Normalize Volumes for HTML rendering
+                            "volumes": _normalize_volumes(data_block),
+                        })
+                    else:
+                        log.warning("[SEARCH] Full record fetch failed for %s: %d", rid, r_full.status_code)
+                except Exception as e:
+                    log.warning("[SEARCH] Exception fetching %s: %s", rid, e)
+    except Exception:
+        log.exception("[SEARCH] Unexpected error")
         return templates.TemplateResponse(
             "search.html",
-            {
-                "request": request,
-                "kind": kind,
-                "q": query,
-                "limit": limit,
-                "returnedFields": returnedFields,
-                "error": f"Search failed: {r.status_code} {r.reason_phrase}",
-                "error_detail": (r.text[:2000] if r.text else ""),
-            },
-            status_code=r.status_code or 500,
-        )
-    except Exception as e:
-        log.error("[SEARCH] unexpected error: %s", e)
-        return templates.TemplateResponse(
-            "search.html",
-            {
-                "request": request,
-                "kind": kind,
-                "q": query,
-                "limit": limit,
-                "returnedFields": returnedFields,
-                "error": "Unexpected error",
-                "error_detail": str(e),
-            },
+            {"request": request, "error": "Unexpected error", "error_detail": "See logs"},
             status_code=500,
         )
 
-    # Render table + mermaid (no raw JSON)
     return templates.TemplateResponse(
         "search.html",
         {
             "request": request,
-            "results": res,
+            "results": {"results": enriched_results, "totalCount": len(enriched_results)},
             "kind": kind,
             "q": query,
             "limit": limit,
-            "returnedFields": returnedFields,
-            "children_by_id": children_by_id,
         },
     )
 
-# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/search/view/{record_id}", response_class=HTMLResponse)
+async def view_record(request: Request, record_id: str):
+    at = _access_token(request)
+    storage_url = f"https://{osdu.OSDU_BASE_URL}/api/storage/v2/records/{record_id}"
+    hdr = osdu.headers(at)
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.get(storage_url, headers=hdr)
+        r.raise_for_status()
+        full = r.json()
+        data_block = full.get("data", {}) or {}
+        volumes = _normalize_volumes(data_block)
+        return templates.TemplateResponse(
+            "record.html",
+            {
+                "request": request,
+                "record": full,
+                "volumes": volumes,
+            },
+        )
+
+# ───────────────────────────────────────────────────────────────────────────────
 # KEYS page: dataspace -> type -> object (kept for convenience)
-# ─────────────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────────────────
 @app.get("/keys", response_class=HTMLResponse)
 async def keys_page(request: Request):
     prefill_ds = []
@@ -509,6 +551,7 @@ async def keys_page(request: Request):
         media_type="text/html",
     )
 
+
 @app.get("/keys/dataspaces.json")
 async def keys_dataspaces(request: Request):
     at = _access_token(request)
@@ -519,6 +562,7 @@ async def keys_dataspaces(request: Request):
         rows = []
     items = [{"path": x.get("path"), "uri": x.get("uri")} for x in rows if x.get("path")]
     return JSONResponse({"items": items})
+
 
 @app.get("/keys/types.json")
 async def keys_types(
@@ -561,6 +605,7 @@ async def keys_types(
         ]]
     return JSONResponse({"items": items})
 
+
 @app.get("/keys/objects.json")
 async def keys_objects(
     request: Request,
@@ -584,6 +629,7 @@ async def keys_objects(
         out.append({"uuid": uid, "title": title, "uri": r.get("uri", ""), "contentType": ct})
     return JSONResponse({"items": out})
 
+
 @app.get("/keys/object.json")
 async def keys_object(
     request: Request,
@@ -595,6 +641,7 @@ async def keys_object(
     enc = urllib.parse.quote(ds, safe="")
     # Metadata (with referencedContent - reserved for future)
     obj = await osdu.get_resource(at, enc, typ, uuid, include_refs=True)
+
     # --- Normalize possible list shapes to a single dict for UI ---
     raw_obj = obj  # keep a copy for return (diagnostics)
     if isinstance(obj, list):
@@ -603,23 +650,31 @@ async def keys_object(
     if not isinstance(obj, dict):
         # If we still don't have a dict, downgrade gracefully
         return JSONResponse({"obj": obj, "raw": raw_obj, "edges": [], "arrays": [], "geom": None})
+
     # Edges
     edges = osdu.extract_refs(obj) if hasattr(osdu, "extract_refs") else []
+
     # Arrays
     try:
         arrays = await osdu.list_arrays(at, enc, typ, uuid)
     except Exception as e:
         log.warning("keys_object list_arrays failed: %s", e)
         arrays = []
+
     # Geometry (Grid2d only)
     t = (obj.get("$type") or obj.get("contentType") or "")
     is_grid2d = t.endswith("Grid2dRepresentation") or "obj_Grid2dRepresentation" in t
     geom = osdu.extract_grid2d_geometry(obj) if (is_grid2d and hasattr(osdu, "extract_grid2d_geometry")) else None
-    return JSONResponse({"obj": obj, "raw": raw_obj, "edges": edges, "arrays": arrays, "geom": geom})
 
-# ─────────────────────────────────────────────────────────────────────────────
+    # Normalize Volumes (if present)
+    data_block = obj if isinstance(obj, dict) else {}
+    volumes = _normalize_volumes(data_block)
+
+    return JSONResponse({"obj": obj, "raw": raw_obj, "edges": edges, "arrays": arrays, "geom": geom, "volumes": volumes})
+
+# ───────────────────────────────────────────────────────────────────────────────
 # Dataspace admin endpoints (delete/lock/unlock/manifest)
-# ─────────────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────────────────
 @app.post("/dataspaces/delete", summary="Delete a dataspace")
 async def dataspaces_delete(request: Request, path: str = Form(...)):
     at = _access_token(request)
@@ -638,6 +693,7 @@ async def dataspaces_delete(request: Request, path: str = Form(...)):
         )
     return JSONResponse({"status": "ok"})
 
+
 @app.post("/dataspaces/lock", summary="Lock a dataspace")
 async def dataspaces_lock(request: Request, path: str = Form(...)):
     at = _access_token(request)
@@ -651,6 +707,7 @@ async def dataspaces_lock(request: Request, path: str = Form(...)):
         )
     return JSONResponse({"status": "ok"})
 
+
 @app.post("/dataspaces/unlock", summary="Unlock a dataspace")
 async def dataspaces_unlock(request: Request, path: str = Form(...)):
     at = _access_token(request)
@@ -663,6 +720,7 @@ async def dataspaces_unlock(request: Request, path: str = Form(...)):
             status_code=r.status_code or 500,
         )
     return JSONResponse({"status": "ok"})
+
 
 @app.post("/dataspaces/manifest", summary="Build OSDU manifest for a dataspace")
 async def dataspaces_manifest(

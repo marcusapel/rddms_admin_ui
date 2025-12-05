@@ -9,72 +9,57 @@
 <!-- ✅ Working form -->
 <form method="post" action="/search/run" style="width:48rem">
 
-  <div>
-    <label>kind</label>
-    <input name="kind" style="width:48rem"
-           value="{{ kind or 'osdu:wks:work-product-component--ReservoirEstimatedVolumes:1.1.0' }}" />
-  </div>
+  <label>kind</label>
+  <input type="text" name="kind" value="{{ kind or '' }}" style="width: 100%;">
 
-  <div>
-    <label>query</label>
-    <input name="query" style="width:48rem" value="{{ q or '*' }}" />
-  </div>
+  <label>query</label>
+  <input type="text" name="query" value="{{ q or '*' }}" style="width: 100%;">
 
-  <div>
-    <label>limit</label>
-    <input name="limit" type="number" min="1" max="100" value="{{ limit or 5 }}" />
-  </div>
+  <label>limit</label>
+  <input type="number" name="limit" value="{{ limit or 50 }}" min="1" max="500">
 
-  <div>
-    <label>returnedFields (comma separated)</label>
-    <input name="returnedFields" style="width:48rem"
-           value="{{ returnedFields or 'id,kind,version,data.Name,data.Description,ancestry.parents,data.ParentObjectID' }}" />
-  </div>
+  <!-- returnedFields is not used server-side right now, kept for future -->
+  <label>returnedFields (comma separated)</label>
+  <input type="text" name="returnedFields" value="{{ returnedFields or 'id,kind,version' }}" style="width: 100%;">
 
   <button type="submit">Search</button>
 </form>
 
-<!-- ✅ Error panel -->
 {% if error %}
-<div style="color:#b00020; background:#ffecec; border:1px solid #b00020; padding:.75rem; margin-bottom:1rem;">
-  <strong>Error:</strong> {{ error }}<br>
-  {% if error_detail %}
-    <details style="margin-top:.5rem;">
-      <summary>Details</summary>
-      <pre style="white-space:pre-wrap;">{{ error_detail }}</pre>
-    </details>
-  {% endif %}
-</div>
+  <div class="error">
+    <strong>Error:</strong> {{ error }}
+    {% if error_detail %}
+      <details>
+        <summary>Details</summary>
+        <pre>{{ error_detail }}</pre>
+      </details>
+    {% endif %}
+  </div>
 {% endif %}
 
-<!-- ✅ Results -->
 {% if results %}
   {% set total = results.totalCount or (results.results | length) %}
-  <h3>Results ({{ total }})</h3>
+  <h5>Results ({{ total }})</h5>
 
   {% if total == 0 %}
     <p>No records matched your query.</p>
   {% else %}
-    <table border="1" cellspacing="0" cellpadding="6" style="border-collapse:collapse; width:100%;">
-      <thead style="background:#f6f6f6;">
-        <tr>
-          <th>Name</th>
-          <th>Description</th>
-          <th>Kind</th>
-          <th>ID</th>
-          <th>Version</th>
-          <th>ParentObjectID</th>
-          <th>Ancestors</th>
-          <th>Children</th>
-        </tr>
-      </thead>
-      <tbody>
+    <table>
+      <tr>
+        <th>Name</th>
+        <th>Description</th>
+        <th>Kind</th>
+        <th>ID</th>
+        <th>Version</th>
+        <th>ParentObjectID</th>
+        <th>Parents</th>
+        <th>Children</th>
+        <th>Action</th>
+      </tr>
       {% for rec in results.results or [] %}
         {% set name = (rec.data or {}).get('Name') %}
         {% set desc = (rec.data or {}).get('Description') %}
         {% set parentObj = (rec.data or {}).get('ParentObjectID') %}
-        {% set ancestors = ((rec.ancestry or {}).get('parents') or []) %}
-        {% set children = (children_by_id or {}).get(rec.id, []) %}
         <tr>
           <td>{{ name or '—' }}</td>
           <td>{{ desc or '—' }}</td>
@@ -83,53 +68,111 @@
           <td>{{ rec.version if rec.version is not none else '—' }}</td>
           <td>{{ parentObj or '—' }}</td>
           <td>
-            {% if ancestors %}
-              <ul>{% for p in ancestors %}<li>{{ p }}</li>{% endfor %}</ul>
+            {% if rec.ancestry_parents %}
+              {% for p in rec.ancestry_parents %}– {{ p }} {% endfor %}
             {% else %}—{% endif %}
           </td>
           <td>
-            {% if children %}
-              <ul>{% for ch in children %}<li>{{ ch.id }} <small>({{ ch.kind }})</small></li>{% endfor %}</ul>
+            {% if rec.ancestry_children %}
+              {% for ch in rec.ancestry_children %}– {{ ch }} {% endfor %}
             {% else %}—{% endif %}
           </td>
+          <td>/search/view/{{ rec.id }}View Details</a></td>
         </tr>
       {% endfor %}
-      </tbody>
     </table>
 
-    <h3 style="margin-top:2rem;">Relationship graphs (Mermaid)</h3>
+    <h5>Relationship graphs (Mermaid)</h5>
     {% for rec in results.results or [] %}
-      {% set name = (rec.data or {}).get('Name') %}
-      {% set label = (name or rec.id or 'record') %}
-      {% set ancestors = ((rec.ancestry or {}).get('parents') or []) %}
-      {% set children = (children_by_id or {}).get(rec.id, []) %}
-      {% set parentObj = (rec.data or {}).get('ParentObjectID') %}
-      <h4>{{ label }}</h4>
-      <pre class="mermaid">
+      {% set label = (rec.data or {}).get('Name') or rec.id %}
+      {% set rec_index = loop.index %}
+      <h6>{{ label }}</h6>
+      <div class="mermaid">
 graph LR
-REC{{ loop.index }}["{{ label | replace('"','\\"') }}"]
-{% if parentObj %}
-POBJ{{ loop.index }}["{{ parentObj | replace('"','\\"') }}"] -->|context| REC{{ loop.index }}
-{% endif %}
-{% for p in ancestors %}
-P{{ loop.index }}a{{ loop.index0 }}["{{ p | replace('"','\\"') }}"] -->|parent| REC{{ loop.index }}
+REC{{ rec_index }}["{{ label | replace('"','\\\"') }}"]
+{% for p in rec.ancestry_parents %}
+P{{ rec_index }}a{{ loop.index0 }}["{{ p | replace('"','\\\"') }}"] --> REC{{ rec_index }}
 {% endfor %}
-{% for ch in children %}
-C{{ loop.index }}c{{ loop.index0 }}["{{ (ch.id ~ ' (' ~ (ch.kind or '') ~ ')') | replace('"','\\"') }}"] -->|child| REC{{ loop.index }}
+{% for ch in rec.ancestry_children %}
+C{{ rec_index }}c{{ loop.index0 }}["{{ ch | replace('"','\\\"') }}"] --> REC{{ rec_index }}
 {% endfor %}
-      </pre>
+      </div>
     {% endfor %}
-    <script> src="https://unpkg.com/mermaid@10.9.1/dist/mermaid.min.js"</script>
-    <script>mermaid.initialize({ startOnLoad: true });</script>
+
+    <h4>Volume Tables</h4>
+
+    {% for rec in results.results or [] %}
+      {% set vol = rec.volumes or {} %}
+      {% set vmap = vol.ColumnValues or {} %}
+      {% set key_cols = vol.KeyColumns or [] %}
+      {% set val_cols = vol.Columns or [] %}
+
+      {% set key_names = [] %}
+      {% for k in key_cols %}
+        {% set _ = key_names.append(k.ColumnName) %}
+      {% endfor %}
+
+      {% set value_names = [] %}
+      {% for c in val_cols %}
+        {% if (c.ColumnRole or '').lower() == 'value' %}
+          {% set _ = value_names.append(c.ColumnName) %}
+        {% endif %}
+      {% endfor %}
+
+      {# Fallback: if Columns metadata is missing, derive headers from vmap keys #}
+      {% if value_names | length == 0 and vmap %}
+        {% for cname, _vals in vmap.items() %}
+          {% if cname not in key_names %}
+            {% set _ = value_names.append(cname) %}
+          {% endif %}
+        {% endfor %}
+      {% endif %}
+
+      {% set headers = key_names + value_names %}
+
+      {# Determine row count from the first available column in vmap #}
+      {% set sample_col =
+           (key_names | length > 0 and key_names[0]) or
+           (value_names | length > 0 and value_names[0]) or '' %}
+      {% set nrows = (sample_col and (vmap.get(sample_col) or []) | length) or 0 %}
+
+      {% if vmap and headers | length > 0 and nrows > 0 %}
+        <h5>{{ (rec.data or {}).get('Name') or rec.id }} — Volumes</h5>
+        <table border="1">
+          <tr>
+            {% for h in headers %}
+              <th>{{ h }}</th>
+            {% endfor %}
+          </tr>
+
+          {% for i in range(nrows) %}
+            <tr>
+              {% for h in headers %}
+                {% set col_vals = vmap.get(h) or [] %}
+                <td>
+                  {% if (col_vals | length) > i %}
+                    {{ col_vals[i] }}
+                  {% else %}
+                    —
+                  {% endif %}
+                </td>
+              {% endfor %}
+            </tr>
+          {% endfor %}
+        </table>
+      {% endif %}
+    {% endfor %}
   {% endif %}
 {% endif %}
 
-<!-- Debug JSON -->
-{% if results %}
-  <details style="margin-top:1rem;">
-    <summary>Debug: Raw Search JSON</summary>
-    <pre style="white-space:pre-wrap;">{{ results | tojson(indent=2) }}</pre>
-  </details>
-{% endif %}
+
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'default',
+    securityLevel: 'loose'
+  });
+</script>
 
 {% endblock %}
