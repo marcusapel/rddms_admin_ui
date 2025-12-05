@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 
 {% extends "base.html" %}
 {% block title %}RDDMS Admin — Search{% endblock %}
@@ -176,3 +177,183 @@ C{{ rec_index }}c{{ loop.index0 }}["{{ ch | replace('"','\\\"') }}"] --> REC{{ r
 </script>
 
 {% endblock %}
+=======
+
+{% extends "base.html" %}
+{% block title %}RDDMS Admin — Search{% endblock %}
+
+{% block content %}
+
+<h2>Search</h2>
+
+<!-- ✅ Working form -->
+<form method="post" action="/search/run" style="width:48rem">
+
+  <label>kind</label>
+  <input type="text" name="kind" value="{{ kind or '' }}" style="width: 100%;">
+
+  <label>query</label>
+  <input type="text" name="query" value="{{ q or '*' }}" style="width: 100%;">
+
+  <label>limit</label>
+  <input type="number" name="limit" value="{{ limit or 50 }}" min="1" max="500">
+
+  <!-- returnedFields is not used server-side right now, kept for future -->
+  <label>returnedFields (comma separated)</label>
+  <input type="text" name="returnedFields" value="{{ returnedFields or 'id,kind,version' }}" style="width: 100%;">
+
+  <button type="submit">Search</button>
+</form>
+
+{% if error %}
+  <div class="error">
+    <strong>Error:</strong> {{ error }}
+    {% if error_detail %}
+      <details>
+        <summary>Details</summary>
+        <pre>{{ error_detail }}</pre>
+      </details>
+    {% endif %}
+  </div>
+{% endif %}
+
+{% if results %}
+  {% set total = results.totalCount or (results.results | length) %}
+  <h5>Results ({{ total }})</h5>
+
+  {% if total == 0 %}
+    <p>No records matched your query.</p>
+  {% else %}
+    <table>
+      <tr>
+        <th>Name</th>
+        <th>Description</th>
+        <th>Kind</th>
+        <th>ID</th>
+        <th>Version</th>
+        <th>ParentObjectID</th>
+        <th>Parents</th>
+        <th>Children</th>
+        <th>Action</th>
+      </tr>
+      {% for rec in results.results or [] %}
+        {% set name = (rec.data or {}).get('Name') %}
+        {% set desc = (rec.data or {}).get('Description') %}
+        {% set parentObj = (rec.data or {}).get('ParentObjectID') %}
+        <tr>
+          <td>{{ name or '—' }}</td>
+          <td>{{ desc or '—' }}</td>
+          <td>{{ rec.kind or '—' }}</td>
+          <td>{{ rec.id or '—' }}</td>
+          <td>{{ rec.version if rec.version is not none else '—' }}</td>
+          <td>{{ parentObj or '—' }}</td>
+          <td>
+            {% if rec.ancestry_parents %}
+              {% for p in rec.ancestry_parents %}– {{ p }} {% endfor %}
+            {% else %}—{% endif %}
+          </td>
+          <td>
+            {% if rec.ancestry_children %}
+              {% for ch in rec.ancestry_children %}– {{ ch }} {% endfor %}
+            {% else %}—{% endif %}
+          </td>
+          <td>/search/view/{{ rec.id }}View Details</a></td>
+        </tr>
+      {% endfor %}
+    </table>
+
+    <h5>Relationship graphs (Mermaid)</h5>
+    {% for rec in results.results or [] %}
+      {% set label = (rec.data or {}).get('Name') or rec.id %}
+      {% set rec_index = loop.index %}
+      <h6>{{ label }}</h6>
+      <div class="mermaid">
+graph LR
+REC{{ rec_index }}["{{ label | replace('"','\\\"') }}"]
+{% for p in rec.ancestry_parents %}
+P{{ rec_index }}a{{ loop.index0 }}["{{ p | replace('"','\\\"') }}"] --> REC{{ rec_index }}
+{% endfor %}
+{% for ch in rec.ancestry_children %}
+C{{ rec_index }}c{{ loop.index0 }}["{{ ch | replace('"','\\\"') }}"] --> REC{{ rec_index }}
+{% endfor %}
+      </div>
+    {% endfor %}
+
+    <h4>Volume Tables</h4>
+
+    {% for rec in results.results or [] %}
+      {% set vol = rec.volumes or {} %}
+      {% set vmap = vol.ColumnValues or {} %}
+      {% set key_cols = vol.KeyColumns or [] %}
+      {% set val_cols = vol.Columns or [] %}
+
+      {% set key_names = [] %}
+      {% for k in key_cols %}
+        {% set _ = key_names.append(k.ColumnName) %}
+      {% endfor %}
+
+      {% set value_names = [] %}
+      {% for c in val_cols %}
+        {% if (c.ColumnRole or '').lower() == 'value' %}
+          {% set _ = value_names.append(c.ColumnName) %}
+        {% endif %}
+      {% endfor %}
+
+      {# Fallback: if Columns metadata is missing, derive headers from vmap keys #}
+      {% if value_names | length == 0 and vmap %}
+        {% for cname, _vals in vmap.items() %}
+          {% if cname not in key_names %}
+            {% set _ = value_names.append(cname) %}
+          {% endif %}
+        {% endfor %}
+      {% endif %}
+
+      {% set headers = key_names + value_names %}
+
+      {# Determine row count from the first available column in vmap #}
+      {% set sample_col =
+           (key_names | length > 0 and key_names[0]) or
+           (value_names | length > 0 and value_names[0]) or '' %}
+      {% set nrows = (sample_col and (vmap.get(sample_col) or []) | length) or 0 %}
+
+      {% if vmap and headers | length > 0 and nrows > 0 %}
+        <h5>{{ (rec.data or {}).get('Name') or rec.id }} — Volumes</h5>
+        <table border="1">
+          <tr>
+            {% for h in headers %}
+              <th>{{ h }}</th>
+            {% endfor %}
+          </tr>
+
+          {% for i in range(nrows) %}
+            <tr>
+              {% for h in headers %}
+                {% set col_vals = vmap.get(h) or [] %}
+                <td>
+                  {% if (col_vals | length) > i %}
+                    {{ col_vals[i] }}
+                  {% else %}
+                    —
+                  {% endif %}
+                </td>
+              {% endfor %}
+            </tr>
+          {% endfor %}
+        </table>
+      {% endif %}
+    {% endfor %}
+  {% endif %}
+{% endif %}
+
+
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'default',
+    securityLevel: 'loose'
+  });
+</script>
+
+{% endblock %}
+>>>>>>> abb6fabfaa4de9d23e2761584cfe98385c375ea4
