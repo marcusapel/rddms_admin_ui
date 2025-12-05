@@ -117,11 +117,6 @@
 
       const codeNode = li.querySelector('code');
 
-      // Open
-      const openBtn = mkBtn('Open', `Open ${path}`, () => {
-        window.location.assign('/d/' + encodeURIComponent(path));
-      });
-
       // Resources
       const keysBtn = mkBtn('Resources', `Open Resources for ${path}`, () => {
         window.location.assign('/keys?ds=' + encodeURIComponent(path));
@@ -208,7 +203,6 @@
       li.insertBefore(manifestBtn, codeNode);
       li.insertBefore(delBtn, codeNode);
       li.insertBefore(keysBtn, codeNode);
-      li.insertBefore(openBtn, codeNode);
       li.insertBefore(document.createTextNode(' '), codeNode);
     });
 
