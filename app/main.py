@@ -1,5 +1,3 @@
-<<<<<<< HEAD
-
 from __future__ import annotations
 import os
 import urllib.parse
@@ -1530,4 +1528,5 @@ async def dataspaces_manifest(
             status_code=r.status_code or 500,
         )
     return JSONResponse({"status": "ok", "manifest": manifest})
+
 >>>>>>> abb6fabfaa4de9d23e2761584cfe98385c375ea4
