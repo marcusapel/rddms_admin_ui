@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 
 # app/ingest_router.py
 from __future__ import annotations
@@ -309,4 +308,5 @@ async def get_last_manifest() -> JSONResponse:
         raise HTTPException(status_code=404, detail="No manifests stored yet")
     # return the most recently inserted manifest
     last_key = list(_MANIFESTS.keys())[-1]
+
 >>>>>>> abb6fabfaa4de9d23e2761584cfe98385c375ea4
