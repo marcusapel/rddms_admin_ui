@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 
 from __future__ import annotations
 import os
@@ -818,4 +817,5 @@ async def build_manifest(
                   r.status_code, corr, path, r.text)
         raise
     return r.json() or {}
+
 >>>>>>> abb6fabfaa4de9d23e2761584cfe98385c375ea4
